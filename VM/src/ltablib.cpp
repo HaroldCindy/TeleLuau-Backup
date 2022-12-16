@@ -1,5 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 // This code is based on Lua 5.x implementation licensed under MIT License; see lua_LICENSE.txt for details
+#define ltablib_c
+
 #include "lualib.h"
 
 #include "lapi.h"
@@ -97,7 +99,7 @@ static void moveelements(lua_State* L, int srct, int dstt, int f, int e, int t)
             {
                 TValue* s = &srcarray[f + i - 1];
                 TValue* d = &dstarray[t + i - 1];
-                setobj2t(L, d, s);
+                setobj2t(L, dst, d, s);
             }
         }
         else
@@ -106,7 +108,7 @@ static void moveelements(lua_State* L, int srct, int dstt, int f, int e, int t)
             {
                 TValue* s = &srcarray[(f + i) - 1];
                 TValue* d = &dstarray[(t + i) - 1];
-                setobj2t(L, d, s);
+                setobj2t(L, dst, d, s);
             }
         }
 
@@ -256,7 +258,7 @@ static int tpack(lua_State* L)
     for (int i = 0; i < n; ++i)
     {
         TValue* e = &t->array[i];
-        setobj2t(L, e, L->base + i);
+        setobj2t(L, t, e, L->base + i);
     }
 
     // t.n = number of elements
@@ -437,7 +439,7 @@ static int tcreate(lua_State* L)
         for (int i = 0; i < size; ++i)
         {
             TValue* e = &t->array[i];
-            setobj2t(L, e, v);
+            setobj2t(L, t, e, v);
         }
     }
     else

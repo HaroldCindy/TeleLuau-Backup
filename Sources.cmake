@@ -207,6 +207,7 @@ target_sources(Luau.VM PRIVATE
     VM/include/luaconf.h
     VM/include/lualib.h
 
+    VM/src/ares.cpp
     VM/src/lapi.cpp
     VM/src/laux.cpp
     VM/src/lbaselib.cpp
@@ -238,6 +239,7 @@ target_sources(Luau.VM PRIVATE
     VM/src/lvmload.cpp
     VM/src/lvmutils.cpp
 
+    VM/src/ares.h
     VM/src/lapi.h
     VM/src/lbuiltins.h
     VM/src/lbytecode.h

@@ -205,7 +205,19 @@ typedef struct lua_TValue
 // from table to same table (no barrier)
 #define setobjt2t setobj
 // to table (needs barrier)
-#define setobj2t setobj
+// Ares: need to invalidate any existing table iter order when changing
+// a nil elem to non-nil. This is not necessarily true when setting a
+// non-nil element to nil...
+// TODO: Variant that skips this check where the check can be hoisted out
+#define setobj2t(L, tab, obj1, obj2) \
+    {                           \
+        const TValue* ob2 = (obj2); \
+        TValue* ob1 = (obj1);        \
+        Table* tab_ob = (tab);  \
+        if (LUAU_UNLIKELY(tab_ob->iterorder && ttisnil(ob1) && !ttisnil(ob2))) \
+            luaH_overrideiterorder(L, tab_ob, 0); \
+        setobj((L), (ob1), (ob2)) \
+    }
 // to new object (no barrier)
 #define setobj2n setobj
 
@@ -414,6 +426,16 @@ typedef struct LuaNode
         checkliveness(L->global, i_o); \
     }
 
+// Ares: For keeping track of original node iteration order
+typedef struct LuaNodeIterOrder {
+    // Index of the node to look at for this point in the iteration
+    // order. indexes into `Table.node`.
+    int node_idx;
+    // Used to convert from a node index to that node's index
+    // within the iterorder list.
+    int node_to_iterorder_idx;
+} LuaNodeIterOrder;
+
 // clang-format off
 typedef struct Table
 {
@@ -438,6 +460,8 @@ typedef struct Table
     TValue* array;  // array part
     LuaNode* node;
     GCObject* gclist;
+    // Ares: used for maintaining iterator indices across `unpersist(persist(foo))`
+    LuaNodeIterOrder* iterorder; // indices into the `node` array, or -1 if N/A
 } Table;
 // clang-format on
 

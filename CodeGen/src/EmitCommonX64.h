@@ -208,6 +208,13 @@ inline void jumpIfTableIsReadOnly(AssemblyBuilderX64& build, RegisterX64 table, 
     build.jcc(ConditionX64::NotEqual, label);
 }
 
+// Ares: custom iter order invalidation
+inline void jumpIfTableCustomIter(AssemblyBuilderX64& build, RegisterX64 table, Label& label)
+{
+    build.cmp(dword[table + offsetof(Table, iterorder)], 0);
+    build.jcc(ConditionX64::NotEqual, label);
+}
+
 inline void jumpIfNodeKeyTagIsNot(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 node, lua_Type tag, Label& label)
 {
     tmp.size = SizeX64::dword;

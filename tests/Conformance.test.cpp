@@ -1597,4 +1597,101 @@ TEST_CASE("HugeFunction")
     CHECK(lua_tonumber(L, -1) == 42);
 }
 
+TEST_CASE("Ares")
+{
+    runConformance("ares.lua");
+    runConformance("ares_closures.lua");
+    runConformance("ares_coros.lua");
+    runConformance("ares_iterators.lua");
+}
+
+static std::string getConformanceTestSource(std::string name) {
+    std::string path = __FILE__;
+    path.erase(path.find_last_of("\\/"));
+    path += "/conformance/";
+    path += name;
+
+    std::fstream stream(path, std::ios::in | std::ios::binary);
+    REQUIRE(stream);
+
+    std::string source(std::istreambuf_iterator<char>(stream), {});
+
+    stream.close();
+    return source;
+}
+
+TEST_CASE("Ares forkserver")
+{
+    std::string source = getConformanceTestSource("ares_multirun.lua");
+    StateRef globalState(luaL_newstate(), lua_close);
+    lua_State* GL = globalState.get();
+
+    if (codegen && Luau::CodeGen::isSupported())
+        Luau::CodeGen::create(GL);
+
+    luaL_openlibs(GL);
+
+    // Register a few global functions for conformance tests
+    std::vector<luaL_Reg> funcs = {};
+
+    if (!verbose)
+    {
+        funcs.push_back({"print", lua_silence});
+    }
+
+    // "null" terminate the list of functions to register
+    funcs.push_back({nullptr, nullptr});
+
+    lua_pushvalue(GL, LUA_GLOBALSINDEX);
+    luaL_register(GL, nullptr, funcs.data());
+    lua_pop(GL, 1);
+
+    // Done writing to globals
+    luaL_sandbox(GL);
+
+    // Spawn a new thread to load our script into
+    lua_State* L = lua_newthread(GL);
+    luaL_sandboxthread(L);
+
+    size_t bytecodeSize = 0;
+    char* bytecode = luau_compile(source.data(), source.size(), nullptr, &bytecodeSize);
+    int result = luau_load(L, "=forkserver", bytecode, bytecodeSize, 0);
+    free(bytecode);
+
+    REQUIRE(result == 0);
+
+    if (codegen && Luau::CodeGen::isSupported())
+        Luau::CodeGen::compile(L, -1);
+
+    lua_State *Lforker = eris_make_forkserver(L);
+    // Don't need the original thread on the main stack anymore
+    lua_remove(GL, -2);
+
+    // Run the basic ares test 4 times in a row, using the forkserver
+    for (int i = 0; i < 4; ++i)
+    {
+        lua_State *Lchild = eris_fork_thread(Lforker, true);
+        int status = lua_resume(Lchild, nullptr, 0);
+        REQUIRE(status == LUA_YIELD);
+
+        // serialized string is now on the Lforker stack
+        eris_serialize_thread(Lforker, Lchild);
+
+        // Pop the original thread
+        lua_pop(GL, 1);
+
+        // spawn a new thread from the serialized version still on the stack
+        Lchild = eris_fork_thread(Lforker, false);
+        status = lua_resume(Lchild, nullptr, 0);
+        REQUIRE(status == 0);
+
+        REQUIRE(lua_isstring(Lchild, -1));
+        CHECK(std::string(lua_tostring(Lchild, -1)) == "OK");
+        lua_pop(GL, 1);
+    }
+
+    extern void luaC_validate(lua_State * L); // internal function, declared in lgc.h - not exposed via lua.h
+    luaC_validate(GL);
+}
+
 TEST_SUITE_END();

@@ -367,6 +367,122 @@ LUA_API void lua_unref(lua_State* L, int ref);
 
 #define lua_pushfstring(L, fmt, ...) lua_pushfstringL(L, fmt, ##__VA_ARGS__)
 
+
+/*
+** =======================================================================
+** Ares persistence
+** =======================================================================
+*/
+
+#if defined(eris_c)
+/* Utility macro for populating the perms table with internal C functions. */
+#define eris_persist_static(lib, fn) eris_persist_static_cont(lib, fn, doesntmatter)
+# define eris_persist_static_cont(lib, fn, cont)\
+    extern lua_CFunction __perm_##lib##_##fn;   \
+    extern lua_Continuation __perm_##lib##_##fn##_cont; \
+    if (forUnpersist) {\
+      lua_pushstring(L, "__eris." #lib "_" #fn);      \
+      /* upvalues on the closure are irrelevant since we'll never actually call it */ \
+      lua_pushcclosurek(L, *__perm_##lib##_##fn, #fn, 0, *__perm_##lib##_##fn##_cont);\
+    }\
+    else {\
+      lua_pushcclosurek(L, *__perm_##lib##_##fn, #fn, 0, *__perm_##lib##_##fn##_cont);\
+      lua_pushstring(L, "__eris." #lib "_" #fn);\
+    }\
+    lua_rawset(L, -3);
+#else
+/* Utility macro to export internal C functions to eris. */
+# define eris_persist_static(lib, fn)\
+    static int fn (lua_State *L);          \
+    static int cont (lua_State *L, int idx);          \
+    lua_CFunction __perm_##lib##_##fn = fn;     \
+    lua_Continuation __perm_##lib##_##fn##_cont = nullptr;
+# define eris_persist_static_cont(lib, fn, cont)\
+    static int fn (lua_State *L);          \
+    static int cont (lua_State *L, int idx);\
+    lua_CFunction __perm_##lib##_##fn = fn;     \
+    lua_Continuation __perm_##lib##_##fn##_cont = cont;
+#endif
+
+#if defined(eris_c)
+/* Functions in Lua libraries used to access C functions we need to add to the
+ * permanents table to fully support yielded coroutines. */
+static void populateperms(lua_State *L, bool forUnpersist)
+{
+#endif
+#if defined(eris_c) || defined(lstrlib_c)
+    eris_persist_static(strlib, gmatch_aux)
+#endif
+#if defined(eris_c) || defined(lbaselib_c)
+    // these aren't continuations, these are upvalues that may end up on
+    // the call stack in their own right, but can't be called directly!
+    eris_persist_static(baselib, luaB_inext)
+    eris_persist_static(baselib, luaB_next)
+
+    // regular functions
+    eris_persist_static(baselib, luaB_assert)
+    eris_persist_static(baselib, luaB_error)
+    eris_persist_static(baselib, luaB_gcinfo)
+    eris_persist_static(baselib, luaB_getfenv)
+    eris_persist_static(baselib, luaB_getmetatable)
+    eris_persist_static(baselib, luaB_newproxy)
+    eris_persist_static(baselib, luaB_print)
+    eris_persist_static(baselib, luaB_rawequal)
+    eris_persist_static(baselib, luaB_rawget)
+    eris_persist_static(baselib, luaB_rawset)
+    eris_persist_static(baselib, luaB_rawlen)
+    eris_persist_static(baselib, luaB_select)
+    eris_persist_static(baselib, luaB_setfenv)
+    eris_persist_static(baselib, luaB_setmetatable)
+    eris_persist_static(baselib, luaB_tonumber)
+    eris_persist_static(baselib, luaB_tostring)
+    eris_persist_static(baselib, luaB_type)
+    eris_persist_static(baselib, luaB_typeof)
+#endif
+#if defined(eris_c) || defined(lcorolib_c)
+    // closure created by coroutine.wrap()
+    eris_persist_static_cont(corolib, auxwrapy, auxwrapcont)
+
+    // regular functions
+    eris_persist_static(corolib, cocreate)
+    eris_persist_static(corolib, corunning)
+    eris_persist_static(corolib, costatus)
+    eris_persist_static(corolib, cowrap)
+    eris_persist_static(corolib, coyield)
+    eris_persist_static(corolib, coyieldable)
+    eris_persist_static(corolib, coclose)
+#endif
+#if defined(eris_c) || defined(ltablib_c)
+    // regular functions
+    eris_persist_static(tablib, tconcat)
+    eris_persist_static(tablib, foreach)
+    eris_persist_static(tablib, foreachi)
+    eris_persist_static(tablib, getn)
+    eris_persist_static(tablib, maxn)
+    eris_persist_static(tablib, tinsert)
+    eris_persist_static(tablib, tremove)
+    eris_persist_static(tablib, sort)
+    eris_persist_static(tablib, tpack)
+    eris_persist_static(tablib, tunpack)
+    eris_persist_static(tablib, tmove)
+    eris_persist_static(tablib, tcreate)
+    eris_persist_static(tablib, tfind)
+    eris_persist_static(tablib, tclear)
+    eris_persist_static(tablib, tfreeze)
+    eris_persist_static(tablib, tisfrozen)
+    eris_persist_static(tablib, tclone)
+#endif
+#if defined(eris_c)
+}
+#endif
+
+#undef eris_persist_static
+
+LUA_API lua_State *eris_make_forkserver(lua_State *Lsrc);
+
+LUA_API lua_State *eris_fork_thread(lua_State *Lforker, uint8_t default_state);
+LUA_API void eris_serialize_thread(lua_State *Lforker, lua_State *L);
+
 /*
 ** {======================================================================
 ** Debug API
@@ -385,6 +501,9 @@ LUA_API const char* lua_getlocal(lua_State* L, int level, int n);
 LUA_API const char* lua_setlocal(lua_State* L, int level, int n);
 LUA_API const char* lua_getupvalue(lua_State* L, int funcindex, int n);
 LUA_API const char* lua_setupvalue(lua_State* L, int funcindex, int n);
+// Ares: get a pointer to the actual upvalue address rather than
+// pushing its value onto the stack
+LUA_API void* lua_getupvalueid(lua_State* L, int funcindex, int n);
 
 LUA_API void lua_singlestep(lua_State* L, int enabled);
 LUA_API int lua_breakpoint(lua_State* L, int funcindex, int line, int enabled);

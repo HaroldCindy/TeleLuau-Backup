@@ -1,0 +1,399 @@
+//------------------------------------------------
+//--- 010 Editor v13.0.1 Binary Template
+//
+//      File: ARES.bt
+//   Authors: Harold Cindy
+//   Version: 
+//   Purpose: dissecting serialized Ares chunks
+//  Category: 
+// File Mask: *.ares
+//  ID Bytes: 41 52 45 53
+//   History: 
+//------------------------------------------------
+// This file originally based on Eris' FILEFORMAT file
+
+typedef uchar uint8_t;
+typedef double lua_Number;
+typedef lua_Number Number;
+typedef uint32 uint32_t;
+typedef uint64 uint64_t;
+typedef int16 int16_t;
+typedef int32 int32_t;
+typedef uint64 size_t;
+typedef size_t ProtoPtr;
+typedef uint32 Instruction;
+
+#define LUA_TNONE		(-1)
+
+#define LUA_TNIL		0
+#define LUA_TBOOLEAN		1
+#define LUA_TLIGHTUSERDATA	2
+#define LUA_TNUMBER		3
+#define LUA_TVECTOR		4
+#define LUA_TSTRING		5
+#define LUA_TTABLE		6
+#define LUA_TFUNCTION		7
+#define LUA_TUSERDATA		8
+#define LUA_TTHREAD		9
+#define LUA_NUMTAGS		10
+
+#define LUA_TPROTO	LUA_NUMTAGS
+#define LUA_TUPVAL	(LUA_NUMTAGS+1)
+#define LUA_TDEADKEY	(LUA_NUMTAGS+2)
+
+/*
+** number of all possible tags (including LUA_TNONE but excluding DEADKEY)
+*/
+#define LUA_TOTALTAGS	(LUA_TUPVAL+1)
+
+#define ERIS_PERMANENT (LUA_TOTALTAGS + 1)
+#define ERIS_REFERENCE (ERIS_PERMANENT + 1)
+
+typedef enum <uint8_t> {
+    ET_NIL = LUA_TNIL,
+    ET_BOOLEAN = LUA_TBOOLEAN,
+    ET_LIGHTUSERDATA = LUA_TLIGHTUSERDATA,
+    ET_NUMBER = LUA_TNUMBER,
+    ET_STRING = LUA_TSTRING,
+    ET_TABLE = LUA_TTABLE,
+    ET_FUNCTION = LUA_TFUNCTION,
+    ET_USERDATA = LUA_TUSERDATA,
+    ET_THREAD = LUA_TTHREAD,
+    ET_PROTO = LUA_TPROTO,
+    ET_UPVAL = LUA_TUPVAL,
+    ET_PERMANENT = ERIS_PERMANENT,
+    ET_REFERENCE = ERIS_REFERENCE,
+} ErisType;
+
+// thread status; 0 is OK
+typedef enum <uint8_t>
+{
+    LUA_OK = 0,
+    LUA_YIELD,
+    LUA_ERRRUN,
+    LUA_ERRSYNTAX,
+    LUA_ERRMEM,
+    LUA_ERRERR,
+    LUA_BREAK, // yielded for a debug breakpoint
+} lua_Status;
+
+typedef enum <uint8_t> eris_CIKind {
+    ERIS_CI_KIND_NONE = 0,
+    ERIS_CI_KIND_LUA = 1,
+    ERIS_CI_KIND_C = 2,
+} eris_CIKind;
+
+/*
+** Bits in CallInfo status
+*/
+#define CIST_LUA	(1<<0)	/* call is running a Lua function */
+#define CIST_HOOKED	(1<<1)	/* call is running a debug hook */
+#define CIST_REENTRY	(1<<2)	/* call is running on same invocation of
+                                   luaV_execute of previous call */
+#define CIST_YIELDED	(1<<3)	/* call reentered after suspension */
+#define CIST_YPCALL	(1<<4)	/* call is a yieldable protected call */
+#define CIST_STAT	(1<<5)	/* call has an error status (pcall) */
+#define CIST_TAIL	(1<<6)	/* call was tail called */
+
+/* thread status */
+#define LUA_OK		0
+#define LUA_YIELD	1
+#define LUA_ERRRUN	2
+#define LUA_ERRSYNTAX	3
+#define LUA_ERRMEM	4
+#define LUA_ERRGCMM	5
+#define LUA_ERRERR	6
+
+struct Header;
+struct Object;
+struct Number;
+struct String;
+struct Table;
+struct Closure;
+struct Userdata;
+struct Thread;
+struct Proto;
+struct UpVal;
+struct PermKey;
+struct LiteralTable;
+struct Upvaldesc;
+struct LocVar;
+struct CallInfo;
+
+// used to track logical reference numbers for parsed objects
+local uint64 refNum = 0;
+// tracks where we saw each reference
+local uint64 refPositions[0xFFFF] = {0};
+
+typedef struct {
+    char sig[4] <bgcolor=0x33aaff>;   /* Header signature for rudimentary validation */
+    Assert(sig == "ARES");
+    uint8_t sizeof_number;  /* sizeof(lua_Number) to check type compatibility */
+    lua_Number test;    /* -1.234567890 to check representation compatibility */
+    uint8_t sizeof_int; /* sizeof(int) in persisted data */
+    uint8_t sizeof_size_t;  /* sizeof(size_t) in persisted data */
+    /* Note that the last two fields determine the size of the int and size_t
+     * fields in the following definitions. We write each value in the native
+     * "size" and check for truncation when reading, if necessary. */
+} Header <bgcolor=cLtRed>;
+
+// Pre-check for if either a userdata or table needs special parsing
+uint8_t ParseSpecial() {
+    // This value must be reconstructed by executing a closure, and
+    // isn't actually present in literal form.
+    uint8_t isSpecial;
+    if (isSpecial) {
+        // should be a zero-arg closure that, when executed, will return
+        // a deserialized version of the object. This should be the retval
+        // from the __persist function that may be present on a metatable.
+        Object special_unpacker;
+        return TRUE;
+    }
+    return FALSE;
+}
+
+string ReadObject(Object &o) {
+    // ref should be non-zero if present
+    if (o.ourRef) {
+        // ET_REFERENCE refNums are references _to_ something
+        if (o.type == ET_REFERENCE) {
+            return Str("%s -> #%d @%d", EnumToString(o.type), o.ourRef, refPositions[o.ourRef]);
+        }
+        return Str("%s #%d", EnumToString(o.type), o.ourRef);
+    }
+    return EnumToString(o.type);
+}
+
+typedef struct {
+    // What the logical reference number of this object will be, not that this is
+    // implicit and based on parse order of `Object`s!
+    local int ourRef = 0;
+    ErisType type <bgcolor=cLtBlue>;
+    switch(type) {
+        // some kinds of things don't references to them stored, though
+        case ET_NIL:
+        case ET_BOOLEAN:
+        case ET_LIGHTUSERDATA:
+        case ET_NUMBER:
+        case ET_REFERENCE:
+        // permanent never writes to the ref table, what would be the point?
+        case ET_PERMANENT:
+            break;
+        default: {
+            ourRef = ++refNum;
+            // track where we saw this so we can show the address of what's
+            // being referenced in ET_REFERENCEs
+            refPositions[refNum] = startof(this);
+        }
+    }
+
+    switch(type) {
+        case ET_NIL:
+            break;
+        case ET_BOOLEAN:
+            uint8_t val; break;
+        case ET_LIGHTUSERDATA:
+            size_t val; break;
+        case ET_BOOLEAN:
+            uint8_t val; break;
+        case ET_NUMBER:
+            Number val; break;
+        case ET_STRING:
+            String val; break;
+        case ET_TABLE:
+            if (!ParseSpecial())
+                Table val;
+            break;
+        case ET_FUNCTION:
+            Closure val; break;
+        case ET_USERDATA:
+            if (!ParseSpecial())
+                Userdata val;
+            break;
+        case ET_THREAD:
+            Thread val; break;
+        case ET_PROTO:
+            Proto val; break;
+        case ET_UPVAL:
+            UpVal val; break;
+        case ET_PERMANENT:
+            PermKey val; break;
+        case ET_REFERENCE:
+            /* If the object is not primitive (see list above) we remember it and
+             * increment the reference counter, and point any future occurrences of
+             * it to this one via a reference (see above, Reference r). */
+            /* Note that the types LUA_TNIL, LUA_TBOOLEAN, LUA_TNUMBER and
+             * LUA_TLIGHTUSERDATA will never be "referenced", but always be written
+             * directly. */
+            uint32 reference <bgcolor=cLtGreen>; /* The index the object was referenced with */
+            ourRef = reference;
+            break;
+        default:
+            Assert(0);
+    }
+} Object<optimize=false, bgcolor=cLtPurple, read=ReadObject>;
+
+typedef struct {
+    size_t length;      /* The length of the string */
+    char str[length];   /* The actual string (not always null terminated) */
+} String <read=this.str>;
+
+struct Table {
+    uint8_t read_only;
+    uint8_t safe_env;
+    int array_size;
+    int node_size;
+    local int i;
+    // This serialization format preserves `nil` holes, so we can't use `nil` as a
+    // terminator.
+    for (i=0; i<(array_size+node_size); ++i) {
+        /* key/value pairs */
+        struct Pair {
+            Object key;         /* never nil, since that indicates the end */
+            Object value;       /* never nil, since the entry wouldn't exist then */
+        } p <read=Str("%s : %s", ReadObject(this.key), ReadObject(this.value))>;
+    }
+
+    Object metatable;   /* The metatable (nil for none, otherwise LUA_TTABLE) */
+};
+
+
+struct Userdata {
+    uint8_t utag;       /* Userdata tag */
+    size_t length;      /* Size of the data */
+    uchar data[length]; /* The actual data */
+    Object metatable;   /* The metatable (nil for none, otherwise LUA_TTABLE) */
+};
+
+struct Closure {
+    uint8_t isCClosure; /* 1 if the closure is a C closure; 0 otherwise */
+    uint8_t nups;       /* Number of upvalues the function uses */
+    if (isCClosure) {
+        struct CClosure {
+            Object f;           /* The actual C function. Must be available via the
+                                 * permanents table on persist and unpersist. */
+            Object upvals[parentof(this).nups]; /* All upvalues */
+            /* Note that here the upvalues are the actual objects, i.e. these are not
+             * of type LUA_TUPVAL, since C closures' upalues are always closed. */
+        } ccl;
+    } else {
+        struct LClosure {
+            Object env;
+            Object proto;       /* The proto this function uses */
+            Object upvals[parentof(this).nups]; /* All upvalues */
+        } lcl;
+    }
+};
+
+struct UpVal {
+    Object obj;         /* The object this upval refers to; we proxy it with
+                         * the LUA_TUPVAL type to keep shared upvalues intact */
+};
+
+struct Proto {
+
+    Object source;      /* Textual source for the function, string or nil */
+
+    int bytecode_id;
+
+    uint8_t maxstacksize;   /* Size of stack reserved for the function */
+    uint8_t numparams;  /* Number of parameters taken */
+    uint8_t nups;       /* Number of upvalues */
+    uint8_t is_vararg;  /* 1 if function accepts varargs, 0 otherwise */
+
+    int sizecode;       /* Number of instructions in code */
+    Instruction code[sizecode]; /* The proto's code */
+
+    int sizek;          /* Number of constants referenced */
+    Object k[sizek];    /* Constants referenced */
+
+    int sizep;          /* Number of inner Protos referenced */
+    Object p[sizep];    /* Inner Protos referenced */
+
+    int linedefined;    /* Start of line range */
+    Object debugname;   /* Name of the function for debugging, string or nil */
+
+    // Neither of these are supported yet.
+    uint8_t have_lineinfo;
+    if (have_lineinfo) {
+        Assert(0);
+        int sizelineinfo;   /* Number of opcode-line mappings */
+        int lineinfo[sizelineinfo]; /* opcode-line mappings */
+
+    }
+    uint8_t debug;      /* 1 if debug data is present; 0 otherwise */
+    if (debug) {
+        Assert(0);
+        Object source;  /* The source code string */
+
+        int sizelocvars;    /* Number of local variable names */
+        struct LocVar {
+            int startpc;        /* Point where variable is active */
+            int endpc;          /* Point where variable is dead */
+            Object name;        /* Name of the local variable */
+        } locvars[sizelocvars];    /* Local variable names */
+
+        Object upvalnames[sizeupvalues];    /* Upvalue names */
+    }
+};
+
+struct Thread {
+    Object env;
+    int stacksize;      /* The overall size of the stack filled with objects,
+                         * including all stack frames. */
+    size_t top;         /* top = L->top - L->stack; */
+    Object stack[top];    /* All stack values, bottom up */
+
+    lua_Status status;     /* current thread status (ok, yield) */
+    size_t errfunc;     /* NOT USED current error handling function (stack index) */
+
+    int32_t num_cis;        /* number of callinfo frames */
+    /* The CallInfo stack, starting with base_ci */
+    struct CallInfo {
+        size_t func;        /* func = ci->func - thread->stack */
+        size_t top;         /* top = ci->top - thread->stack */
+        size_t base;        /* base = ci->base - thread-stack */
+        int32_t nresults;   /* expected number of results from this function */
+        uint8_t flags;      /* What to do after completing this call, see lstate.h */
+        eris_CIKind ci_kind;/* What kind of CallInfo this is */
+
+        if (ci_kind == ERIS_CI_KIND_LUA) {
+            size_t savedpc; /* savedpc = ci->u.l.savedpc - ci_func(ci)->p->code */
+        } else if (ci_kind == ERIS_CI_KIND_C) {
+            //uint8_t status;
+            //if (callstatus & (CIST_YPCALL | CIST_YIELDED)) {
+            //    int32_t ctx;  /* context info. in case of yields */
+            //    Object k;     /* C function, callback for resuming */
+            //}
+            Object function;
+        } else {
+            Assert(ci_kind == ERIS_CI_KIND_NONE);
+        }
+    } ci[num_cis] <bgcolor=cLtAqua, optimize=false>;
+
+    if (status == LUA_YIELD) {
+        // size_t extra;   /* value of thread->ci->extra, which is the original
+        //                 * value of thread->ci->func */
+    }
+
+    while (TRUE) {
+        struct OpenUpval {
+            size_t idx;         /* stack index of the value + 1; 0 if end of list */
+            if (idx)
+                Object upval;       /* The upvalue */
+        } openupval <optimize=false>;
+        if (!openupval.idx)
+            break;
+    }
+};
+
+struct PermKey {
+    ErisType type;   /* The actual LUA_TXXX of the original value. */
+    Object key;     /* The value to use as a key when unpersisting. */
+    /* Note that we store the type of the original value (replaced by the
+     * permanent table value used as a key when unpersisting) to ensure the
+     * value in the permanents table when unpersisting has the correct type. */
+};
+
+Header header;      /* The header used for basic validation. */
+Object rootobj;     /* The root object that was persisted. */

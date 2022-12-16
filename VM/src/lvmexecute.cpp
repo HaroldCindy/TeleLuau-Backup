@@ -361,7 +361,7 @@ reentry:
 
                 if (LUAU_LIKELY(ttisstring(gkey(n)) && tsvalue(gkey(n)) == tsvalue(kv) && !ttisnil(gval(n)) && !h->readonly))
                 {
-                    setobj2t(L, gval(n), ra);
+                    setobj2t(L, h, gval(n), ra);
                     luaC_barriert(L, h, ra);
                     VM_NEXT();
                 }
@@ -574,7 +574,7 @@ reentry:
                     // fast-path: value is in expected slot
                     if (LUAU_LIKELY(ttisstring(gkey(n)) && tsvalue(gkey(n)) == tsvalue(kv) && !ttisnil(gval(n)) && !h->readonly))
                     {
-                        setobj2t(L, gval(n), ra);
+                        setobj2t(L, h, gval(n), ra);
                         luaC_barriert(L, h, ra);
                         VM_NEXT();
                     }
@@ -586,7 +586,7 @@ reentry:
                         int cachedslot = gval2slot(h, res);
                         // save cachedslot to accelerate future lookups; patches currently executing instruction since pc-2 rolls back two pc++
                         VM_PATCH_C(pc - 2, cachedslot);
-                        setobj2t(L, res, ra);
+                        setobj2t(L, h, res, ra);
                         luaC_barriert(L, h, ra);
                         VM_NEXT();
                     }
@@ -678,7 +678,7 @@ reentry:
                     // index has to be an exact integer and in-bounds for the array portion
                     if (LUAU_LIKELY(unsigned(index - 1) < unsigned(h->sizearray) && !h->metatable && !h->readonly && double(index) == indexd))
                     {
-                        setobj2t(L, &h->array[unsigned(index - 1)], ra);
+                        setobj2t(L, h, &h->array[unsigned(index - 1)], ra);
                         luaC_barriert(L, h, ra);
                         VM_NEXT();
                     }
@@ -733,7 +733,7 @@ reentry:
 
                     if (LUAU_LIKELY(unsigned(c) < unsigned(h->sizearray) && !h->metatable && !h->readonly))
                     {
-                        setobj2t(L, &h->array[c], ra);
+                        setobj2t(L, h, &h->array[c], ra);
                         luaC_barriert(L, h, ra);
                         VM_NEXT();
                     }
@@ -2107,7 +2107,7 @@ reentry:
                 TValue* array = h->array;
 
                 for (int i = 0; i < c; ++i)
-                    setobj2t(L, &array[index + i - 1], rb + i);
+                    setobj2t(L, h, &array[index + i - 1], rb + i);
 
                 luaC_barrierfast(L, h);
                 VM_NEXT();
@@ -2276,7 +2276,22 @@ reentry:
                     // then we advance index through the hash portion
                     while (unsigned(index - sizearray) < unsigned(sizenode))
                     {
-                        LuaNode* n = &h->node[index - sizearray];
+                        // Ares: need to look up the "real" next index in `iterorder` if
+                        // this is an unpersisted table
+                        int node_idx = index - sizearray;
+                        if (h->iterorder)
+                        {
+                            node_idx = h->iterorder[node_idx].node_idx;
+                            LUAU_ASSERT(node_idx <= sizenode && node_idx >= -1);
+                            // nil equivalent, try the next entry
+                            if (node_idx == -1)
+                            {
+                                ++index;
+                                continue;
+                            }
+                        }
+
+                        LuaNode* n = &h->node[node_idx];
 
                         if (!ttisnil(gval(n)))
                         {

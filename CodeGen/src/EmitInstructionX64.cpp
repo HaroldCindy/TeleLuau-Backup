@@ -1383,6 +1383,8 @@ void emitInstSetTableN(AssemblyBuilderX64& build, const Instruction* pc, Label& 
 
     jumpIfMetatablePresent(build, table, fallback);
     jumpIfTableIsReadOnly(build, table, fallback);
+    // Ares: custom iter order invalidation
+    jumpIfTableCustomIter(build, table, fallback);
 
     // setobj2t(L, &h->array[c], ra);
     build.mov(rax, qword[table + offsetof(Table, array)]);
@@ -1467,6 +1469,8 @@ void emitInstSetTable(AssemblyBuilderX64& build, const Instruction* pc, Label& n
 
     jumpIfMetatablePresent(build, table, fallback);
     jumpIfTableIsReadOnly(build, table, fallback);
+    // Ares: custom iter order invalidation
+    jumpIfTableCustomIter(build, table, fallback);
 
     // setobj2t(L, &h->array[unsigned(index - 1)], ra);
     build.mov(rdx, qword[table + offsetof(Table, array)]);
@@ -1563,6 +1567,8 @@ void emitInstSetTableKS(AssemblyBuilderX64& build, const Instruction* pc, int pc
 
     jumpIfNodeKeyNotInExpectedSlot(build, rax, node, luauConstantValue(aux), fallback);
     jumpIfTableIsReadOnly(build, table, fallback);
+    // Ares: custom iter order invalidation
+    jumpIfTableCustomIter(build, table, fallback);
 
     setNodeValue(build, xmm0, luauNodeValue(node), ra);
 
@@ -1598,6 +1604,8 @@ void emitInstSetGlobal(AssemblyBuilderX64& build, const Instruction* pc, int pcp
 
     jumpIfNodeKeyNotInExpectedSlot(build, rax, node, luauConstantValue(aux), fallback);
     jumpIfTableIsReadOnly(build, table, fallback);
+    // Ares: custom iter order invalidation
+    jumpIfTableCustomIter(build, table, fallback);
 
     setNodeValue(build, xmm0, luauNodeValue(node), ra);
 

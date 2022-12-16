@@ -59,8 +59,8 @@ OBJECTS=$(AST_OBJECTS) $(COMPILER_OBJECTS) $(ANALYSIS_OBJECTS) $(CODEGEN_OBJECTS
 EXECUTABLE_ALIASES = luau luau-analyze luau-tests
 
 # common flags
-CXXFLAGS=-g -Wall
-LDFLAGS=
+CXXFLAGS+=-g -Wall
+LDFLAGS+=
 
 # some gcc versions treat var in `if (type var = val)` as unused
 # some gcc versions treat variables used in constexpr if blocks as unused

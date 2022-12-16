@@ -833,7 +833,7 @@ void lua_rawsetfield(lua_State* L, int idx, const char* k)
     api_check(L, ttistable(t));
     if (hvalue(t)->readonly)
         luaG_readonlyerror(L);
-    setobj2t(L, luaH_setstr(L, hvalue(t), luaS_new(L, k)), L->top - 1);
+    setobj2t(L, hvalue(t), luaH_setstr(L, hvalue(t), luaS_new(L, k)), L->top - 1);
     luaC_barriert(L, hvalue(t), L->top - 1);
     L->top--;
 }
@@ -845,7 +845,7 @@ void lua_rawset(lua_State* L, int idx)
     api_check(L, ttistable(t));
     if (hvalue(t)->readonly)
         luaG_readonlyerror(L);
-    setobj2t(L, luaH_set(L, hvalue(t), L->top - 2), L->top - 1);
+    setobj2t(L, hvalue(t), luaH_set(L, hvalue(t), L->top - 2), L->top - 1);
     luaC_barriert(L, hvalue(t), L->top - 1);
     L->top -= 2;
 }
@@ -857,7 +857,7 @@ void lua_rawseti(lua_State* L, int idx, int n)
     api_check(L, ttistable(o));
     if (hvalue(o)->readonly)
         luaG_readonlyerror(L);
-    setobj2t(L, luaH_setnum(L, hvalue(o), n), L->top - 1);
+    setobj2t(L, hvalue(o), luaH_setnum(L, hvalue(o), n), L->top - 1);
     luaC_barriert(L, hvalue(o), L->top - 1);
     L->top--;
 }
@@ -1210,7 +1210,18 @@ int lua_rawiter(lua_State* L, int idx, int iter)
     // then we advance iter through the hash portion
     for (; unsigned(iter - sizearray) < unsigned(sizenode); ++iter)
     {
-        LuaNode* n = &h->node[iter - sizearray];
+        // Ares: need to look up the "real" next index in `iterorder` if
+        // this is an unpersisted table
+        int node_idx = iter - h->sizearray;
+        if (h->iterorder)
+        {
+            LUAU_ASSERT(node_idx <= sizenode(h) && node_idx >= -1);
+            node_idx = h->iterorder[node_idx].node_idx;
+            if (node_idx == -1)
+                continue;
+        }
+
+        LuaNode* n = &h->node[node_idx];
 
         if (!ttisnil(gval(n)))
         {
@@ -1285,10 +1296,14 @@ static const char* aux_upvalue(StkId fi, int n, TValue** val)
     else
     {
         Proto* p = f->l.p;
-        if (!(1 <= n && n <= p->sizeupvalues))
+        // nups is different from sizeupvalues, sizeupvalues is
+        // strictly for the _names_, which we may not have.
+        if (!(1 <= n && n <= p->nups))
             return NULL;
         TValue* r = &f->l.uprefs[n - 1];
         *val = ttisupval(r) ? upvalue(r)->v : r;
+        if (!(1 <= n && n <= p->sizeupvalues))
+            return "";
         return getstr(p->upvalues[n - 1]);
     }
 }
@@ -1296,7 +1311,7 @@ static const char* aux_upvalue(StkId fi, int n, TValue** val)
 const char* lua_getupvalue(lua_State* L, int funcindex, int n)
 {
     luaC_threadbarrier(L);
-    TValue* val;
+    TValue* val = nullptr;
     const char* name = aux_upvalue(index2addr(L, funcindex), n, &val);
     if (name)
     {
@@ -1319,6 +1334,15 @@ const char* lua_setupvalue(lua_State* L, int funcindex, int n)
         luaC_barrier(L, clvalue(fi), L->top);
     }
     return name;
+}
+
+// Ares: get a pointer to the actual upvalue address on the stack
+// rather than pushing its value onto the stack
+LUA_API void *lua_getupvalueid (lua_State *L, int funcindex, int n) {
+    luaC_threadbarrier(L);
+    TValue* val = nullptr;
+    aux_upvalue(index2addr(L, funcindex), n, &val);
+    return val;
 }
 
 uintptr_t lua_encodepointer(lua_State* L, uintptr_t p)
@@ -1350,7 +1374,7 @@ int lua_ref(lua_State* L, int idx)
         TValue* slot = luaH_setnum(L, reg, ref);
         if (g->registryfree != 0)
             g->registryfree = int(nvalue(slot));
-        setobj2t(L, slot, p);
+        setobj2t(L, reg, slot, p);
         luaC_barriert(L, reg, p);
     }
     return ref;

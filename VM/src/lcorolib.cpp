@@ -1,5 +1,6 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 // This code is based on Lua 5.x implementation licensed under MIT License; see lua_LICENSE.txt for details
+#define lcorolib_c
 #include "lualib.h"
 
 #include "lstate.h"
@@ -186,7 +187,7 @@ static int cowrap(lua_State* L)
 {
     cocreate(L);
 
-    lua_pushcclosurek(L, auxwrapy, NULL, 1, auxwrapcont);
+    lua_pushcclosurek(L, auxwrapy, "<wrapped>", 1, auxwrapcont);
     return 1;
 }
 

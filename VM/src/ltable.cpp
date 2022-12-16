@@ -180,7 +180,19 @@ static int findindex(lua_State* L, Table* t, StkId key)
         for (;;)
         { // check whether `key' is somewhere in the chain
             // key may be dead already, but it is ok to use it in `next'
-            if (luaO_rawequalKey(gkey(n), key) || (ttype(gkey(n)) == LUA_TDEADKEY && iscollectable(key) && gcvalue(gkey(n)) == gcvalue(key)))
+            // Ares: is what I _would_ say, if TDEADKEY wasn't a huge problem for serialization.
+            // `next()` isn't very idiomatic in Luau, so I'm ok with killing this usecase.
+            //
+            // I considered allowing it for non-gcable types that won't get deadkeyed, but there's
+            // some nastiness where the in-memory table representation differs depending on
+            // whether the key had a value before it got `nil`ed. Not worth fixing.
+            //
+            // When something is deadkey'd we don't know what its original type was, or if its
+            // value is still alive somewhere without traversing the GC list. Rather than hack
+            // things up even more, just kill that use-case. Note that values can still be `nil`ed
+            // in a `for k, v in tab` loop!
+            if (luaO_rawequalKey(gkey(n), key) && !ttisnil(gval(n)))
+                //|| (ttype(gkey(n)) == LUA_TDEADKEY && iscollectable(key) && gcvalue(gkey(n)) == gcvalue(key)))
             {
                 i = cast_int(n - gnode(t, 0)); // key index in hash table
                 // hash elements are numbered after array ones
@@ -197,6 +209,27 @@ static int findindex(lua_State* L, Table* t, StkId key)
 int luaH_next(lua_State* L, Table* t, StkId key)
 {
     int i = findindex(L, t, key); // find original element
+
+    // Ares: need to fix up initial index to point to
+    // its position in the iter order if this index is
+    // within the node list and an enforced iter order is
+    // being used
+    if (t->iterorder && i >= t->sizearray)
+    {
+        // these indices are relative to the start of the node array,
+        // convert them to an index within iterorder.
+        i = t->iterorder[i - t->sizearray].node_to_iterorder_idx;
+        if(i == -1)
+        {
+            // This might happen if someone assigned nil to a key that
+            // didn't exist before and called `next(tab, 'newkey')`.
+            // Not a problem, we can treat it as end of the sequence
+            // since behavior is (I believe) unspecified in that case!
+            return 0;
+        }
+        i += t->sizearray;
+    }
+
     for (i++; i < t->sizearray; i++)
     { // try first array part
         if (!ttisnil(&t->array[i]))
@@ -208,10 +241,20 @@ int luaH_next(lua_State* L, Table* t, StkId key)
     }
     for (i -= t->sizearray; i < sizenode(t); i++)
     { // then hash part
-        if (!ttisnil(gval(gnode(t, i))))
+        // Ares: May need index into the iteration order list instead
+        int node_idx = i;
+        if (t->iterorder)
+        {
+            node_idx = t->iterorder[i].node_idx;
+            LUAU_ASSERT(node_idx <= sizenode(t) && node_idx >= -1);
+            if (node_idx == -1)
+                continue;
+        }
+
+        if (!ttisnil(gval(gnode(t, node_idx))))
         { // a non-nil value?
-            getnodekey(L, key, gnode(t, i));
-            setobj2s(L, key + 1, gval(gnode(t, i)));
+            getnodekey(L, key, gnode(t, node_idx));
+            setobj2s(L, key + 1, gval(gnode(t, node_idx)));
             return 1;
         }
     }
@@ -377,6 +420,11 @@ static void resize(lua_State* L, Table* t, int nasize, int nhsize)
 {
     if (nasize > MAXSIZE || nhsize > MAXSIZE)
         luaG_runerror(L, "table overflow");
+    // Ares: calling resize() implies the table grew or shrank, which
+    // invalidates any explicit iteration order.
+    if (t->iterorder)
+        luaH_overrideiterorder(L, t, 0);
+
     int oldasize = t->sizearray;
     int oldhsize = t->lsizenode;
     LuaNode* nold = t->node; // save old hash ...
@@ -485,6 +533,10 @@ Table* luaH_new(lua_State* L, int narray, int nhash)
     t->safeenv = 0;
     t->nodemask8 = 0;
     t->node = cast_to(LuaNode*, dummynode);
+    // Ares: explicit iteration order, this has to happen before
+    // below allocs to make sure we don't blow up in luaH_free()
+    // if they throw.
+    t->iterorder = nullptr;
     if (narray > 0)
         setarrayvector(L, t, narray);
     if (nhash > 0)
@@ -498,6 +550,9 @@ void luaH_free(lua_State* L, Table* t, lua_Page* page)
         luaM_freearray(L, t->node, sizenode(t), LuaNode, t->memcat);
     if (t->array)
         luaM_freearray(L, t->array, t->sizearray, TValue, t->memcat);
+    // Ares: explicit iteration order
+    if (t->iterorder)
+        luaM_freearray(L, t->iterorder, sizenode(t), LuaNodeIterOrder, t->memcat);
     luaM_freegco(L, t, sizeof(Table), t->memcat, page);
 }
 
@@ -531,6 +586,10 @@ static TValue* newkey(lua_State* L, Table* t, const TValue* key)
         // after rehash, numeric keys might be located in the new array part, but won't be found in the node part
         return arrayornewkey(L, t, key);
     }
+
+    // Ares: adding a key invalidates any explicit iteration order
+    if (t->iterorder)
+        luaH_overrideiterorder(L, t, 0);
 
     LuaNode* mp = mainposition(t, key);
     if (!ttisnil(gval(mp)) || mp == dummynode)
@@ -807,6 +866,14 @@ Table* luaH_clone(lua_State* L, Table* tt)
         t->lastfree = tt->lastfree;
     }
 
+    // Ares: copy the iter order too.
+    t->iterorder = nullptr;
+    if (tt->iterorder)
+    {
+        luaH_overrideiterorder(L, t, sizenode(t));
+        memcpy(t->iterorder, tt->iterorder, sizenode(t) * sizeof(LuaNodeIterOrder));
+    }
+
     return t;
 }
 
@@ -836,4 +903,38 @@ void luaH_clear(Table* tt)
 
     // back to empty -> no tag methods present
     tt->tmcache = cast_byte(~0);
+
+    // Ares: Can't free this here, just invalidate the indices.
+    if (tt->iterorder)
+    {
+        for (int i = 0; i < sizenode(tt); ++i)
+        {
+            tt->iterorder[i] = {-1, -1};
+        }
+    }
+}
+
+// Added by Ares: enforce a particular iteration order for an unpersisted table
+// to ensure existing pairs() iterators aren't invalidated when unpersisting
+void luaH_overrideiterorder(lua_State* L, Table* t, int override)
+{
+    if (t->iterorder)
+    {
+        // resizing existing iter orders doesn't make sense for current uses
+        // note that because this uses sizenode this must be called BEFORE
+        // any mutation that would resize t->node!
+        LUAU_ASSERT(!override);
+        luaM_freearray(L, t->iterorder, sizenode(t), LuaNodeIterOrder, t->memcat);
+        t->iterorder = nullptr;
+    }
+
+    if (override)
+    {
+        t->iterorder = luaM_newarray(L, sizenode(t), LuaNodeIterOrder, t->memcat);
+        for (int i=0; i<sizenode(t); ++i)
+        {
+            // Default all the index lookup slots to "nothing"
+            t->iterorder[i] = {-1, -1};
+        }
+    }
 }

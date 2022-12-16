@@ -69,6 +69,18 @@ Closure* luaF_newCclosure(lua_State* L, int nelems, Table* e)
     return c;
 }
 
+// Ares: used for u_closure
+UpVal* luaF_newupval (lua_State *L)
+{
+    // TODO: This is cribbed from Lua 5.1 and may not be correct, verify?
+    UpVal *uv = luaM_newgco(L, UpVal, sizeof(UpVal), L->activememcat);
+    luaC_init(L, uv, LUA_TUPVAL);
+    uv->markedopen = 0;
+    uv->v = &uv->u.value;
+    setnilvalue(uv->v);
+    return uv;
+}
+
 UpVal* luaF_findupval(lua_State* L, StkId level)
 {
     global_State* g = L->global;
@@ -84,7 +96,8 @@ UpVal* luaF_findupval(lua_State* L, StkId level)
         pp = &p->u.open.threadnext;
     }
 
-    LUAU_ASSERT(L->isactive);
+    // Ares: We do this on inactive threads.
+    // LUAU_ASSERT(L->isactive);
     LUAU_ASSERT(!isblack(obj2gco(L))); // we don't use luaC_threadbarrier because active threads never turn black
 
     UpVal* uv = luaM_newgco(L, UpVal, sizeof(UpVal), L->activememcat); // not found: create a new one

@@ -52,7 +52,7 @@ const Instruction* execute_LOP_SETGLOBAL(lua_State* L, const Instruction* pc, St
 
     if (LUAU_LIKELY(ttisstring(gkey(n)) && tsvalue(gkey(n)) == tsvalue(kv) && !ttisnil(gval(n)) && !h->readonly))
     {
-        setobj2t(L, gval(n), ra);
+        setobj2t(L, h, gval(n), ra);
         luaC_barriert(L, h, ra);
         return pc;
     }
@@ -208,7 +208,7 @@ const Instruction* execute_LOP_SETTABLEKS(lua_State* L, const Instruction* pc, S
         // fast-path: value is in expected slot
         if (LUAU_LIKELY(ttisstring(gkey(n)) && tsvalue(gkey(n)) == tsvalue(kv) && !ttisnil(gval(n)) && !h->readonly))
         {
-            setobj2t(L, gval(n), ra);
+            setobj2t(L, h, gval(n), ra);
             luaC_barriert(L, h, ra);
             return pc;
         }
@@ -220,7 +220,7 @@ const Instruction* execute_LOP_SETTABLEKS(lua_State* L, const Instruction* pc, S
             int cachedslot = gval2slot(h, res);
             // save cachedslot to accelerate future lookups; patches currently executing instruction since pc-2 rolls back two pc++
             VM_PATCH_C(pc - 2, cachedslot);
-            setobj2t(L, res, ra);
+            setobj2t(L, h, res, ra);
             luaC_barriert(L, h, ra);
             return pc;
         }

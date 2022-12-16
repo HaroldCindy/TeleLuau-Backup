@@ -29,6 +29,8 @@ LUAI_FUNC int luaH_next(lua_State* L, Table* t, StkId key);
 LUAI_FUNC int luaH_getn(Table* t);
 LUAI_FUNC Table* luaH_clone(lua_State* L, Table* tt);
 LUAI_FUNC void luaH_clear(Table* tt);
+// Ares: set whether or not a custom iter order should be used
+LUAI_FUNC void luaH_overrideiterorder(lua_State* L, Table* t, int override);
 
 #define luaH_setslot(L, t, slot, key) (invalidateTMcache(t), (slot == luaO_nilobject ? luaH_newkey(L, t, key) : cast_to(TValue*, slot)))
 

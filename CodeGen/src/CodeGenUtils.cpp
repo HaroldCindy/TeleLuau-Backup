@@ -18,7 +18,20 @@ bool forgLoopNodeIter(lua_State* L, Table* h, int index, TValue* ra)
     // then we advance index through the hash portion
     while (unsigned(index - h->sizearray) < unsigned(1 << h->lsizenode))
     {
-        LuaNode* n = &h->node[index - h->sizearray];
+        // Ares: need to look up the "real" next index in `iterorder` if
+        // this is an unpersisted table
+        int node_idx = index - h->sizearray;
+        if (h->iterorder)
+        {
+            node_idx = h->iterorder[node_idx].node_idx;
+            if (node_idx == -1)
+            {
+                ++index;
+                continue;
+            }
+        }
+
+        LuaNode* n = &h->node[node_idx];
 
         if (!ttisnil(gval(n)))
         {

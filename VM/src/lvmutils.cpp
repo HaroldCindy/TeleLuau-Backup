@@ -152,7 +152,7 @@ void luaV_settable(lua_State* L, const TValue* t, TValue* key, StkId val)
 
                 L->cachedslot = gval2slot(h, newval); // remember slot to accelerate future lookups
 
-                setobj2t(L, newval, val);
+                setobj2t(L, h, newval, val);
                 luaC_barriert(L, h, val);
                 return;
             }
