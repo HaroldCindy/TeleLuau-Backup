@@ -21,7 +21,9 @@ script state gets wound up. Maybe we can just use the `Proto`s directly so long 
 `global_State`?
 
 Basically we want to create something like a "permanent" generation (even though this obviously isn't a generational
-collector.) Does any of the code care about "ownership" of `Proto`s or constants referenced by them?
+collector.) Does any of the code care about "ownership" of `Proto`s or constants referenced by them? The only problem
+I can think of is that dupclosure would no longer be able to use the "constant" closures on the Proto because there
+would be an env mismatch between the "base" VM and the fork.
 
 # Pre-emptive scheduling = yes
 
@@ -144,3 +146,5 @@ Non-trivial problem, but i guess it could work if you were careful.
     hairy. Maybe new threads get their own string table inheriting from the global string table?
 * * Ugh, maybe "real" micro-VMs are easiest to orchestrate like this.
 * `baseCCalls` consistency needed
+* Change `newlstr()` to only check for strings in memcat 0 (base memcat) and the state's current memcat.
+* Optionally treat `GCObject`s in memcat 0 as "permanent", not traversing them or freeing them until the VM is destroyed

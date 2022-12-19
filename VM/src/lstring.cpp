@@ -149,7 +149,11 @@ TString* luaS_newlstr(lua_State* L, const char* str, size_t l)
     unsigned int h = luaS_hash(str, l);
     for (TString* el = L->global->strt.hash[lmod(h, L->global->strt.size)]; el != NULL; el = el->next)
     {
-        if (el->len == l && (memcmp(str, getstr(el), l) == 0))
+        // Ares: strings in different memory categories are considered unique. This is to ensure that
+        // distinct scripts get their own copies of strings unless they belong to the "shared" pool
+        // of memcat 0. Memcat 0 is almost exclusively used for compile-time constants or runtime
+        // allocations that should not count towards a specific script's limits.
+        if ((!el->memcat || el->memcat == L->memcat) && el->len == l && (memcmp(str, getstr(el), l) == 0))
         {
             // string may be dead
             if (isdead(L->global, obj2gco(el)))
