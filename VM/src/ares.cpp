@@ -164,8 +164,11 @@ static const lua_Unsigned kMaxComplexity = 10000;
 #define ERIS_ERR_SPER_UPERMNIL "bad permanent value (no value)"
 #define ERIS_ERR_STACKBOUNDS "stack index out of bounds"
 #define ERIS_ERR_TABLE "bad table value, got a nil value"
+#define ERIS_ERR_TABLE_COUNT "table had a different key count after "\
+                                "deserialize, expected %d, got %d"
 #define ERIS_ERR_THREAD "cannot persist currently running thread"
 #define ERIS_ERR_THREADCI "invalid callinfo"
+#define ERIS_ERR_UPVAL_IDX "invalid upvalue index %d"
 #define ERIS_ERR_THREADCTX "bad C continuation function"
 #define ERIS_ERR_THREADERRF "invalid errfunc"
 #define ERIS_ERR_THREADPC "saved program counter out of bounds"
@@ -1133,7 +1136,7 @@ u_literaltable(Info *info) {                                           /* ... */
   int non_nil_nodes = 0;
   // For whatever reason, reverse insertion order is more likely to chain nodes in the
   // same way as the original Table's hash.
-  for (ssize_t kv_idx = (ssize_t)ordered_keys.size() - 1; kv_idx >= 0; --kv_idx) {
+  for (int kv_idx = (int)ordered_keys.size() - 1; kv_idx >= 0; --kv_idx) {
     const auto &kv_it = &ordered_keys[kv_idx];
     if (ttisnil(&kv_it->first)) {
       // we only keep these nil keys for iteration order preservation, we can't
@@ -1178,7 +1181,9 @@ u_literaltable(Info *info) {                                           /* ... */
     lua_pop(info->L, 1);                               /* ... tbl pos_tbl key */
   }
                                                            /* ... tbl pos_tbl */
-  eris_assert(new_non_nil_nodes == non_nil_nodes);
+  if (new_non_nil_nodes != non_nil_nodes)
+    eris_error(info, ERIS_ERR_TABLE_COUNT, non_nil_nodes, new_non_nil_nodes);
+
   eris_assert(top + 1 == lua_gettop(info->L));
 
   // If this table has a hash component we need to be careful about iteration order
@@ -1774,7 +1779,9 @@ p_closure(Info *info) {                              /* perms reftbl ... func */
       const char *name = lua_getupvalue(info->L, -1, nup);
                                              /* perms reftbl ... lcl uv_val */
       // name is unlikely to be useful, but it shouldn't be null
-      eris_assert(name != nullptr);
+      if (name == nullptr)
+        eris_error(info, ERIS_ERR_UPVAL_IDX, nup);
+
       pushpath(info, "[%d]", nup);
 
       // strictly used as a key for finding shared upvalue references!
@@ -2182,7 +2189,7 @@ u_thread(Info *info) {                                                 /* ... */
 
   /* Read general information. */
   thread->status = READ_VALUE(uint8_t);
-  size_t _errfunc = READ_VALUE(size_t);
+  /* size_t _errfunc = */ READ_VALUE(size_t);
   /* These are only used while a thread is being executed or can be deduced:
   thread->nCcalls = READ_VALUE(uint16_t);
   thread->allowhook = READ_VALUE(uint8_t); */
@@ -2238,7 +2245,7 @@ u_thread(Info *info) {                                                 /* ... */
       UNLOCK(thread);
       eris_assert(lua_type(info->L, -1) == LUA_TFUNCTION);
 
-      Closure *func_cl = clvalue(thread->ci->func);
+      eris_ifassert(Closure *func_cl = clvalue(thread->ci->func));
       eris_assert(clvalue(luaA_toobject(info->L, -1))->c.f == func_cl->c.f);
       // We don't actually use the function for anything, just checking!
       lua_pop(info->L, 1);                                    /* ... thread */

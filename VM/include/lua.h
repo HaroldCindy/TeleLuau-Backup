@@ -394,7 +394,6 @@ LUA_API void lua_unref(lua_State* L, int ref);
 /* Utility macro to export internal C functions to eris. */
 # define eris_persist_static(lib, fn)\
     static int fn (lua_State *L);          \
-    static int cont (lua_State *L, int idx);          \
     lua_CFunction __perm_##lib##_##fn = fn;     \
     lua_Continuation __perm_##lib##_##fn##_cont = nullptr;
 # define eris_persist_static_cont(lib, fn, cont)\
