@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - 'master'
+      - 'teleluau'
     paths-ignore:
       - 'docs/**'
       - 'papers/**'
