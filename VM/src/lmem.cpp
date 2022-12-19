@@ -116,7 +116,7 @@ static_assert(sizeof(LuaNode) == ABISWITCH(32, 32, 32), "size mismatch for table
 static_assert(offsetof(TString, data) == ABISWITCH(24, 20, 20), "size mismatch for string header");
 static_assert(offsetof(Udata, data) == ABISWITCH(16, 16, 12), "size mismatch for userdata header");
 // Ares: we add a pointer, changing table sizes.
-static_assert(sizeof(Table) == ABISWITCH(56, 38, 38), "size mismatch for table header");
+static_assert(sizeof(Table) == ABISWITCH(56, 36, 36), "size mismatch for table header");
 
 const size_t kSizeClasses = LUA_SIZECLASSES;
 const size_t kMaxSmallSize = 512;
