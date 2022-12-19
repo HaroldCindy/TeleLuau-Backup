@@ -74,13 +74,13 @@ local function encode_number(val)
   return string.format("%.14g", val)
 end
 
-
 local type_func_map = {
   [ "nil"     ] = encode_nil,
   [ "table"   ] = encode_table,
   [ "string"  ] = encode_string,
   [ "number"  ] = encode_number,
   [ "boolean" ] = tostring,
+  [ "vector"  ] = tostring,
 }
 
 
@@ -210,8 +210,10 @@ assert(dec_self_referential[4] == dec_self_referential)
 local ro_table = ares.unpersist(ares.persist(table.freeze({1, 2, 3})))
 assert(not table.pack(pcall(function() ro_table['foo'] = 1 end))[1])
 
-local userdata = newproxy(true);
+local userdata = newproxy(true)
 assert(ares.unpersist(ares.persist(userdata)) ~= nil)
+
+assert_round_trips(vector(1, 2, 3))
 
 print('OK')
 return 'OK'

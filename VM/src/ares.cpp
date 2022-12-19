@@ -227,6 +227,7 @@ typedef struct UnpersistInfo {
   std::istream * reader;
   size_t sizeof_int;
   size_t sizeof_size_t;
+  size_t vector_components;
 } UnpersistInfo;
 
 /* Info shared in persist and unpersist. */
@@ -883,6 +884,39 @@ u_number(Info *info) {                                                 /* ... */
 
   eris_assert(lua_type(info->L, -1) == LUA_TNUMBER);
 }
+
+/** ======================================================================== */
+
+static void
+p_vector(Info *info) {                                             /* ... vec */
+  const float *f = lua_tovector(info->L, -1);
+  for (size_t i=0; i<LUA_VECTOR_SIZE; ++i) {
+    WRITE_VALUE(*(f + i), float32);
+  }
+}
+
+static void
+u_vector(Info *info) {                                                 /* ... */
+  if (info->u.upi.vector_components > LUA_VECTOR_SIZE) {
+    eris_error(info, ERIS_ERR_TRUNC_SIZE);
+  }
+
+  eris_checkstack(info->L, 1);
+  // Vectors are _specifically_ 32-bit floats.
+  float v[LUA_VECTOR_SIZE];
+  for (size_t i=0; i<LUA_VECTOR_SIZE; ++i) {
+    v[i] = read_float32(info);
+  }
+
+#if LUA_VECTOR_SIZE == 4
+  lua_pushvector(info->L, v[0], v[1], v[2], v[3]);                 /* ... vec */
+#else
+  lua_pushvector(info->L, v[0], v[1], v[2]);                       /* ... vec */
+#endif
+
+  eris_assert(lua_type(info->L, -1) == LUA_TVECTOR);
+}
+
 
 /** ======================================================================== */
 
@@ -2335,6 +2369,9 @@ persist_typed(Info *info, int type) {                 /* perms reftbl ... obj */
     case LUA_TNUMBER:
       p_number(info);
       break;
+    case LUA_TVECTOR:
+      p_vector(info);
+      break;
     case LUA_TSTRING:
       p_string(info);
       break;
@@ -2494,6 +2531,9 @@ unpersist(Info *info) {                                   /* perms reftbl ... */
       case LUA_TNUMBER:
         u_number(info);
         break;
+      case LUA_TVECTOR:
+        u_vector(info);
+        break;
       case LUA_TSTRING:
         u_string(info);
         break;
@@ -2548,6 +2588,7 @@ p_header(Info *info) {
   WRITE_VALUE(kHeaderNumber, lua_Number);
   WRITE_VALUE(sizeof(int), uint8_t);
   WRITE_VALUE(sizeof(size_t), uint8_t);
+  WRITE_VALUE(LUA_VECTOR_SIZE, uint8_t);
 }
 
 static void
@@ -2568,6 +2609,7 @@ u_header(Info *info) {
   }
   info->u.upi.sizeof_int = READ_VALUE(uint8_t);
   info->u.upi.sizeof_size_t = READ_VALUE(uint8_t);
+  info->u.upi.vector_components = READ_VALUE(uint8_t);
 }
 
 static void store_cfunc_perms(lua_State *L) {

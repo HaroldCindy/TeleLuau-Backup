@@ -1599,7 +1599,29 @@ TEST_CASE("HugeFunction")
 
 TEST_CASE("Ares")
 {
-    runConformance("ares.lua");
+    runConformance("ares.lua", [](lua_State* L) {
+            lua_pushcfunction(L, lua_vector, "vector");
+            lua_setglobal(L, "vector");
+
+#if LUA_VECTOR_SIZE == 4
+            lua_pushvector(L, 0.0f, 0.0f, 0.0f, 0.0f);
+#else
+            lua_pushvector(L, 0.0f, 0.0f, 0.0f);
+#endif
+            luaL_newmetatable(L, "vector");
+
+            lua_pushstring(L, "__index");
+            lua_pushcfunction(L, lua_vector_index, nullptr);
+            lua_settable(L, -3);
+
+            lua_pushstring(L, "__namecall");
+            lua_pushcfunction(L, lua_vector_namecall, nullptr);
+            lua_settable(L, -3);
+
+            lua_setreadonly(L, -1, true);
+            lua_setmetatable(L, -2);
+            lua_pop(L, 1);
+        });
     runConformance("ares_closures.lua");
     runConformance("ares_coros.lua");
     runConformance("ares_iterators.lua");
