@@ -556,28 +556,28 @@ write_uint8_t(Info *info, uint8_t value) {
 
 static void
 write_uint16_t(Info *info, uint16_t value) {
-  write_uint8_t(info, value);
-  write_uint8_t(info, value >> 8);
+  write_uint8_t(info, (uint8_t)value);
+  write_uint8_t(info, (uint8_t)(value >> 8));
 }
 
 static void
 write_uint32_t(Info *info, uint32_t value) {
-  write_uint8_t(info, value);
-  write_uint8_t(info, value >> 8);
-  write_uint8_t(info, value >> 16);
-  write_uint8_t(info, value >> 24);
+  write_uint8_t(info, (uint8_t)value);
+  write_uint8_t(info, (uint8_t)(value >> 8));
+  write_uint8_t(info, (uint8_t)(value >> 16));
+  write_uint8_t(info, (uint8_t)(value >> 24));
 }
 
 static void
 write_uint64_t(Info *info, uint64_t value) {
-  write_uint8_t(info, value);
-  write_uint8_t(info, value >> 8);
-  write_uint8_t(info, value >> 16);
-  write_uint8_t(info, value >> 24);
-  write_uint8_t(info, value >> 32);
-  write_uint8_t(info, value >> 40);
-  write_uint8_t(info, value >> 48);
-  write_uint8_t(info, value >> 56);
+  write_uint8_t(info, (uint8_t)value);
+  write_uint8_t(info, (uint8_t)(value >> 8));
+  write_uint8_t(info, (uint8_t)(value >> 16));
+  write_uint8_t(info, (uint8_t)(value >> 24));
+  write_uint8_t(info, (uint8_t)(value >> 32));
+  write_uint8_t(info, (uint8_t)(value >> 40));
+  write_uint8_t(info, (uint8_t)(value >> 48));
+  write_uint8_t(info, (uint8_t)(value >> 56));
 }
 
 static void
@@ -631,13 +631,13 @@ write_int(Info *info, int value) {
 static void
 write_size_t(Info *info, size_t value) {
   if (sizeof(size_t) == sizeof(uint16_t)) {
-    write_uint16_t(info, value);
+    write_uint16_t(info, (uint16_t)value);
   }
   else if (sizeof(size_t) == sizeof(uint32_t)) {
-    write_uint32_t(info, value);
+    write_uint32_t(info, (uint32_t)value);
   }
   else if (sizeof(size_t) == sizeof(uint64_t)) {
-    write_uint64_t(info, value);
+    write_uint64_t(info, (uint64_t)value);
   }
   else {
     eris_error(info, ERIS_ERR_TYPE_SIZE);
@@ -647,7 +647,7 @@ write_size_t(Info *info, size_t value) {
 static void
 write_lua_Number(Info *info, lua_Number value) {
   if (sizeof(lua_Number) == sizeof(uint32_t)) {
-    write_float32(info, value);
+    write_float32(info, (float)value);
   }
   else if (sizeof(lua_Number) == sizeof(uint64_t)) {
     write_float64(info, value);
