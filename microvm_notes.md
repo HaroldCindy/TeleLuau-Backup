@@ -148,3 +148,7 @@ Non-trivial problem, but i guess it could work if you were careful.
 * `baseCCalls` consistency needed
 * Change `newlstr()` to only check for strings in memcat 0 (base memcat) and the state's current memcat.
 * Optionally treat `GCObject`s in memcat 0 as "permanent", not traversing them or freeing them until the VM is destroyed
+* "released" VMs get everything still alive in their memcat reassigned to memcat 1, which is basically the "dead" VM.
+* * Makes it easier to free up a memcat slot without waiting for the GC to collect everything related to that slot
+* * Walk the GC list and change all memcats as needed, then manually move the memory usage count over to memcat 1
+* * "Free" memcat slots can be determined by looking for memcats over 1 with 0 size
