@@ -239,7 +239,9 @@ void callCheckGc(AssemblyBuilderX64& build, int pcpos, bool savepc, Label& skip)
     emitUpdateBase(build);
 }
 
-void callGetFastTmOrFallback(AssemblyBuilderX64& build, RegisterX64 table, TMS tm, Label& fallback)
+// TeleLuau: temporarily putting in an explicit tm_offset to get around GCC being
+// angry about the non-const `tm` in `offsetof(global_State, tmname[tm])`.
+void callGetFastTmOrFallback(AssemblyBuilderX64& build, RegisterX64 table, TMS tm, int32_t tm_offset, Label& fallback)
 {
     build.mov(rArg1, qword[table + offsetof(Table, metatable)]);
     build.test(rArg1, rArg1);
@@ -251,7 +253,7 @@ void callGetFastTmOrFallback(AssemblyBuilderX64& build, RegisterX64 table, TMS t
     // rArg1 is already prepared
     build.mov(rArg2, tm);
     build.mov(rax, qword[rState + offsetof(lua_State, global)]);
-    build.mov(rArg3, qword[rax + offsetof(global_State, tmname[tm])]);
+    build.mov(rArg3, qword[rax + tm_offset]);
     build.call(qword[rNativeContext + offsetof(NativeContext, luaT_gettm)]);
 }
 

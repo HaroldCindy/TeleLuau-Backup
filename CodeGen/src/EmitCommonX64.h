@@ -272,7 +272,7 @@ void callBarrierTable(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 ta
 void callBarrierObject(AssemblyBuilderX64& build, RegisterX64 tmp, RegisterX64 object, int ra, Label& skip);
 void callBarrierTableFast(AssemblyBuilderX64& build, RegisterX64 table, Label& skip);
 void callCheckGc(AssemblyBuilderX64& build, int pcpos, bool savepc, Label& skip);
-void callGetFastTmOrFallback(AssemblyBuilderX64& build, RegisterX64 table, TMS tm, Label& fallback);
+void callGetFastTmOrFallback(AssemblyBuilderX64& build, RegisterX64 table, TMS tm, int32_t tm_offset, Label& fallback);
 
 void emitExit(AssemblyBuilderX64& build, bool continueInVm);
 void emitUpdateBase(AssemblyBuilderX64& build);

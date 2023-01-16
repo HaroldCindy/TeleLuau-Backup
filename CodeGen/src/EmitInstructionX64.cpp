@@ -102,7 +102,7 @@ void emitInstNameCall(AssemblyBuilderX64& build, const Instruction* pc, int pcpo
     build.setLabel(secondfpath);
 
     jumpIfNodeHasNext(build, node, fallback);
-    callGetFastTmOrFallback(build, table, TM_INDEX, fallback);
+    callGetFastTmOrFallback(build, table, TM_INDEX, offsetof(global_State, tmname[TM_INDEX]), fallback);
     jumpIfTagIsNot(build, rax, LUA_TTABLE, fallback);
 
     build.mov(table, qword[rax + offsetof(TValue, value)]);
