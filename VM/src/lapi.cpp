@@ -1441,6 +1441,11 @@ void lua_setmemcat(lua_State* L, int category)
     L->activememcat = uint8_t(category);
 }
 
+void lua_setmemcatbyteslimit(lua_State* L, lua_Unsigned bytes_limit)
+{
+    L->global->memcatbyteslimit = bytes_limit;
+}
+
 size_t lua_totalbytes(lua_State* L, int category)
 {
     api_check(L, category < LUA_MEMORY_CATEGORIES);

@@ -459,6 +459,13 @@ void* luaM_new_(lua_State* L, size_t nsize, uint8_t memcat)
 {
     global_State* g = L->global;
 
+    // TeleLuau: enforce memory allocation limits in user-owned memcats
+    if (memcat > 1 && g->memcatbyteslimit)
+    {
+        if (g->memcatbytes[memcat] + nsize >= g->memcatbyteslimit)
+            luaD_throw(L, LUA_ERRMEM);
+    }
+
     int nclass = sizeclass(nsize);
 
     void* block = nclass >= 0 ? newblock(L, nclass) : (*g->frealloc)(g->ud, NULL, 0, nsize);
@@ -477,6 +484,13 @@ GCObject* luaM_newgco_(lua_State* L, size_t nsize, uint8_t memcat)
     LUAU_ASSERT(nsize >= kGCOLinkOffset + sizeof(void*));
 
     global_State* g = L->global;
+
+    // TeleLuau: enforce memory allocation limits in user-owned memcats
+    if (memcat > 1 && g->memcatbyteslimit)
+    {
+        if (g->memcatbytes[memcat] + nsize >= g->memcatbyteslimit)
+            luaD_throw(L, LUA_ERRMEM);
+    }
 
     int nclass = sizeclass(nsize);
 

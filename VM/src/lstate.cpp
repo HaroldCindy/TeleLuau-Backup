@@ -216,6 +216,7 @@ lua_State* lua_newstate(lua_Alloc f, void* ud)
         g->memcatbytes[i] = 0;
 
     g->memcatbytes[0] = sizeof(LG);
+    g->memcatbyteslimit = 0;
 
     g->cb = lua_Callbacks();
 
