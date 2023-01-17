@@ -13,7 +13,7 @@ local success, ret = xpcall(
 			return err
 		end)
 assert(not success)
-print(ret)
-print(#foo)
+assert(ret == "not enough memory")
+assert(#foo < 20000)
 
 return 'OK'
