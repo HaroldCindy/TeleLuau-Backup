@@ -485,6 +485,7 @@ LUA_API lua_State *eris_make_forkserver(lua_State *Lsrc);
 
 LUA_API lua_State *eris_fork_thread(lua_State *Lforker, uint8_t default_state);
 LUA_API void eris_serialize_thread(lua_State *Lforker, lua_State *L);
+LUA_API void eris_release_fork(lua_State *LFork);
 
 /*
 ** {======================================================================
