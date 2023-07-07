@@ -21,9 +21,9 @@ The changes to Luau proper are pretty minimal and mainly involve adding hooks to
 * Many cheap "forks" of a base script may be spawned inside a VM, each with their own isolated state
 * Iterators are stable across `deserialize(serialize(vm_state))` trips, regardless of hash bucketing changes
 * Luau's JIT can be used mostly as-is, and serializing state while inside a JITed function is fully supported.
+* Per-script Memory limits are implemented through Luau's alloc hook + memcat system.
+* * This could do with some tuning to make GC more likely as a fork's soft memory limit approaches
 * Pre-emptive scheduling is not yet implemented, an extensible scheduler interface is planned.
-* Per-script Memory limits are similarly unimplemented, but will be implemented through Luau's alloc hook + memcat
-  system.
 
 # Contributing
 
