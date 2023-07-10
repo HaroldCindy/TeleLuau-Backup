@@ -1730,7 +1730,7 @@ TEST_CASE("Ares")
     runConformance("ares_iterators.lua");
 }
 
-static std::string getConformanceTestSource(std::string name) {
+static std::string getConformanceTestSource(const std::string &name) {
     std::string path = __FILE__;
     path.erase(path.find_last_of("\\/"));
     path += "/conformance/";
@@ -1751,8 +1751,8 @@ TEST_CASE("Ares forkserver")
     StateRef globalState(luaL_newstate(), lua_close);
     lua_State* GL = globalState.get();
 
-    if (codegen && Luau::CodeGen::isSupported())
-        Luau::CodeGen::create(GL);
+    if (codegen && luau_codegen_supported())
+        luau_codegen_create(GL);
 
     luaL_openlibs(GL);
 
@@ -1785,8 +1785,8 @@ TEST_CASE("Ares forkserver")
 
     REQUIRE(result == 0);
 
-    if (codegen && Luau::CodeGen::isSupported())
-        Luau::CodeGen::compile(L, -1);
+    if (codegen && luau_codegen_supported())
+        luau_codegen_compile(L, -1);
 
     lua_State *Lforker = eris_make_forkserver(L);
     // Don't need the original thread on the main stack anymore
@@ -1826,8 +1826,8 @@ TEST_CASE("TeleLuau memory limits")
     StateRef globalState(luaL_newstate(), lua_close);
     lua_State* GL = globalState.get();
 
-    if (codegen && Luau::CodeGen::isSupported())
-        Luau::CodeGen::create(GL);
+    if (codegen && luau_codegen_supported())
+        luau_codegen_create(GL);
 
     luaL_openlibs(GL);
 
@@ -1860,8 +1860,8 @@ TEST_CASE("TeleLuau memory limits")
 
     REQUIRE(result == 0);
 
-    if (codegen && Luau::CodeGen::isSupported())
-        Luau::CodeGen::compile(L, -1);
+    if (codegen && luau_codegen_supported())
+        luau_codegen_compile(L, -1);
 
     lua_State *Lforker = eris_make_forkserver(L);
     // Don't need the original thread on the main stack anymore

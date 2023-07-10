@@ -1551,6 +1551,11 @@ u_proto(Info *info) {                                            /* ... proto */
   p->sizecode = READ_VALUE(int);
   eris_reallocvector(info->L, p->code, 0, p->sizecode, Instruction);
   READ(p->code, p->sizecode, Instruction);
+  /* entrycode should only differ for JITted protos, and we don't deal in those. */
+  /* TODO: Luau becomes very unhappy if it tries to call a proto natively but
+   *  finds that it doesn't actually have any native code. Use some heuristic
+   *  to determine when we need to call the codegen after importing a proto. */
+  p->codeentry = p->code;
 
   /* Read constants. */
   p->sizek = READ_VALUE(int);

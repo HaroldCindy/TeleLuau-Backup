@@ -86,7 +86,20 @@ bool forgLoopTableIter(lua_State* L, Table* h, int index, TValue* ra)
     // then we advance index through the hash portion
     while (unsigned(index - h->sizearray) < unsigned(sizenode))
     {
-        LuaNode* n = &h->node[index - sizearray];
+        // Ares: need to look up the "real" next index in `iterorder` if
+        // this is an unpersisted table
+        int node_idx = index - sizearray;
+        if (h->iterorder)
+        {
+            node_idx = h->iterorder[node_idx].node_idx;
+            if (node_idx == -1)
+            {
+                ++index;
+                continue;
+            }
+        }
+
+        LuaNode* n = &h->node[node_idx];
 
         if (!ttisnil(gval(n)))
         {
@@ -502,7 +515,7 @@ const Instruction* executeSETTABLEKS(lua_State* L, const Instruction* pc, StkId 
         // fast-path: value is in expected slot
         if (LUAU_LIKELY(ttisstring(gkey(n)) && tsvalue(gkey(n)) == tsvalue(kv) && !ttisnil(gval(n)) && !h->readonly))
         {
-            setobj2t(L, gval(n), ra);
+            setobj2t(L, h, gval(n), ra);
             luaC_barriert(L, h, ra);
             return pc;
         }
@@ -514,7 +527,7 @@ const Instruction* executeSETTABLEKS(lua_State* L, const Instruction* pc, StkId 
             int cachedslot = gval2slot(h, res);
             // save cachedslot to accelerate future lookups; patches currently executing instruction since pc-2 rolls back two pc++
             VM_PATCH_C(pc - 2, cachedslot);
-            setobj2t(L, res, ra);
+            setobj2t(L, h, res, ra);
             luaC_barriert(L, h, ra);
             return pc;
         }
@@ -742,7 +755,7 @@ const Instruction* executeSETLIST(lua_State* L, const Instruction* pc, StkId bas
     TValue* array = h->array;
 
     for (int i = 0; i < c; ++i)
-        setobj2t(L, &array[index + i - 1], rb + i);
+        setobj2t(L, h, &array[index + i - 1], rb + i);
 
     luaC_barrierfast(L, h);
     return pc;

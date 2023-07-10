@@ -132,6 +132,7 @@ typedef struct {
     lua_Number test;    /* -1.234567890 to check representation compatibility */
     uint8_t sizeof_int; /* sizeof(int) in persisted data */
     uint8_t sizeof_size_t;  /* sizeof(size_t) in persisted data */
+    uint8_t vector_components; /* how many components are stored in vectors */
     /* Note that the last two fields determine the size of the int and size_t
      * fields in the following definitions. We write each value in the native
      * "size" and check for truncation when reading, if necessary. */
@@ -165,16 +166,18 @@ string ReadObject(Object &o) {
 }
 
 typedef struct {
-    // What the logical reference number of this object will be, not that this is
+    // What the logical reference number of this object will be, note that this is
     // implicit and based on parse order of `Object`s!
     local int ourRef = 0;
     ErisType type <bgcolor=cLtBlue>;
     switch(type) {
-        // some kinds of things don't references to them stored, though
+        // some kinds of things don't need reference to them stored, though
+        // storing references would be a waste because they're so small.
         case ET_NIL:
         case ET_BOOLEAN:
         case ET_LIGHTUSERDATA:
         case ET_NUMBER:
+        // storing a reference to a reference? no.
         case ET_REFERENCE:
         // permanent never writes to the ref table, what would be the point?
         case ET_PERMANENT:

@@ -323,8 +323,8 @@ inline void sort_swap(lua_State* L, Table* t, int i, int j)
     // no barrier required because both elements are in the array before and after the swap
     TValue temp;
     setobj2s(L, &temp, &arr[i]);
-    setobj2t(L, &arr[i], &arr[j]);
-    setobj2t(L, &arr[j], &temp);
+    setobj2t(L, t, &arr[i], &arr[j]);
+    setobj2t(L, t, &arr[j], &temp);
 }
 
 inline int sort_less(lua_State* L, Table* t, int i, int j, SortPredicate pred)
