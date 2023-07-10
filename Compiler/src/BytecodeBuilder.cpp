@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <string.h>
 
+LUAU_FASTFLAGVARIABLE(BytecodeVersion4, false)
+
 namespace Luau
 {
 
@@ -513,6 +515,11 @@ bool BytecodeBuilder::patchSkipC(size_t jumpLabel, size_t targetLabel)
     return true;
 }
 
+void BytecodeBuilder::setFunctionTypeInfo(std::string value)
+{
+    functions[currentFunction].typeinfo = std::move(value);
+}
+
 void BytecodeBuilder::setDebugFunctionName(StringRef name)
 {
     unsigned int index = addStringTableEntry(name);
@@ -554,6 +561,11 @@ void BytecodeBuilder::pushDebugUpval(StringRef name)
     upval.name = index;
 
     debugUpvals.push_back(upval);
+}
+
+size_t BytecodeBuilder::getInstructionCount() const
+{
+    return insns.size();
 }
 
 uint32_t BytecodeBuilder::getDebugPC() const
@@ -601,6 +613,13 @@ void BytecodeBuilder::finalize()
 
     bytecode = char(version);
 
+    if (FFlag::BytecodeVersion4)
+    {
+        uint8_t typesversion = getTypeEncodingVersion();
+        LUAU_ASSERT(typesversion == 1);
+        writeByte(bytecode, typesversion);
+    }
+
     writeStringTable(bytecode);
 
     writeVarInt(bytecode, uint32_t(functions.size()));
@@ -622,6 +641,14 @@ void BytecodeBuilder::writeFunction(std::string& ss, uint32_t id) const
     writeByte(ss, func.numparams);
     writeByte(ss, func.numupvalues);
     writeByte(ss, func.isvararg);
+
+    if (FFlag::BytecodeVersion4)
+    {
+        writeByte(ss, 0); // Reserved for cgflags
+
+        writeVarInt(ss, uint32_t(func.typeinfo.size()));
+        ss.append(func.typeinfo);
+    }
 
     // instructions
     writeVarInt(ss, uint32_t(insns.size()));
@@ -1087,7 +1114,16 @@ std::string BytecodeBuilder::getError(const std::string& message)
 uint8_t BytecodeBuilder::getVersion()
 {
     // This function usually returns LBC_VERSION_TARGET but may sometimes return a higher number (within LBC_VERSION_MIN/MAX) under fast flags
+
+    if (FFlag::BytecodeVersion4)
+        return 4;
+
     return LBC_VERSION_TARGET;
+}
+
+uint8_t BytecodeBuilder::getTypeEncodingVersion()
+{
+    return LBC_TYPE_VERSION;
 }
 
 #ifdef LUAU_ASSERTENABLED
@@ -1696,8 +1732,6 @@ void BytecodeBuilder::dumpConstant(std::string& result, int k) const
             formatAppend(result, "'%s'", func.dumpname.c_str());
         break;
     }
-    default:
-        LUAU_UNREACHABLE();
     }
 }
 
@@ -2038,7 +2072,10 @@ void BytecodeBuilder::dumpInstruction(const uint32_t* code, std::string& result,
 
     case LOP_CAPTURE:
         formatAppend(result, "CAPTURE %s %c%d\n",
-            LUAU_INSN_A(insn) == LCT_UPVAL ? "UPVAL" : LUAU_INSN_A(insn) == LCT_REF ? "REF" : LUAU_INSN_A(insn) == LCT_VAL ? "VAL" : "",
+            LUAU_INSN_A(insn) == LCT_UPVAL ? "UPVAL"
+            : LUAU_INSN_A(insn) == LCT_REF ? "REF"
+            : LUAU_INSN_A(insn) == LCT_VAL ? "VAL"
+                                           : "",
             LUAU_INSN_A(insn) == LCT_UPVAL ? 'U' : 'R', LUAU_INSN_B(insn));
         break;
 
@@ -2258,6 +2295,75 @@ std::string BytecodeBuilder::dumpSourceRemarks() const
 
         if (i + 1 < dumpSource.size())
             result += '\n';
+    }
+
+    return result;
+}
+
+static const char* getBaseTypeString(uint8_t type)
+{
+    uint8_t tag = type & ~LBC_TYPE_OPTIONAL_BIT;
+    switch (tag)
+    {
+    case LBC_TYPE_NIL:
+        return "nil";
+    case LBC_TYPE_BOOLEAN:
+        return "boolean";
+    case LBC_TYPE_NUMBER:
+        return "number";
+    case LBC_TYPE_STRING:
+        return "string";
+    case LBC_TYPE_TABLE:
+        return "table";
+    case LBC_TYPE_FUNCTION:
+        return "function";
+    case LBC_TYPE_THREAD:
+        return "thread";
+    case LBC_TYPE_USERDATA:
+        return "userdata";
+    case LBC_TYPE_VECTOR:
+        return "vector";
+    case LBC_TYPE_ANY:
+        return "any";
+    }
+
+    LUAU_ASSERT(!"Unhandled type in getBaseTypeString");
+    return nullptr;
+}
+
+std::string BytecodeBuilder::dumpTypeInfo() const
+{
+    std::string result;
+
+    for (size_t i = 0; i < functions.size(); ++i)
+    {
+        const std::string& typeinfo = functions[i].typeinfo;
+        if (typeinfo.empty())
+            continue;
+
+        uint8_t encodedType = typeinfo[0];
+
+        LUAU_ASSERT(encodedType == LBC_TYPE_FUNCTION);
+
+        formatAppend(result, "%zu: function(", i);
+
+        LUAU_ASSERT(typeinfo.size() >= 2);
+
+        uint8_t numparams = typeinfo[1];
+
+        LUAU_ASSERT(size_t(1 + numparams - 1) < typeinfo.size());
+
+        for (uint8_t i = 0; i < numparams; ++i)
+        {
+            uint8_t et = typeinfo[2 + i];
+            const char* optional = (et & LBC_TYPE_OPTIONAL_BIT) ? "?" : "";
+            formatAppend(result, "%s%s", getBaseTypeString(et), optional);
+
+            if (i + 1 != numparams)
+                formatAppend(result, ", ");
+        }
+
+        formatAppend(result, ")\n");
     }
 
     return result;

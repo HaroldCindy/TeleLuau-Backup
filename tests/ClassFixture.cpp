@@ -11,8 +11,10 @@ namespace Luau
 
 ClassFixture::ClassFixture()
 {
-    TypeArena& arena = typeChecker.globalTypes;
-    TypeId numberType = typeChecker.numberType;
+    GlobalTypes& globals = frontend.globals;
+    TypeArena& arena = globals.globalTypes;
+    TypeId numberType = builtinTypes->numberType;
+    TypeId stringType = builtinTypes->stringType;
 
     unfreeze(arena);
 
@@ -28,47 +30,47 @@ ClassFixture::ClassFixture()
         {"Clone", {makeFunction(arena, nullopt, {baseClassInstanceType}, {baseClassInstanceType})}},
         {"New", {makeFunction(arena, nullopt, {}, {baseClassInstanceType})}},
     };
-    typeChecker.globalScope->exportedTypeBindings["BaseClass"] = TypeFun{{}, baseClassInstanceType};
-    addGlobalBinding(frontend, "BaseClass", baseClassType, "@test");
+    globals.globalScope->exportedTypeBindings["BaseClass"] = TypeFun{{}, baseClassInstanceType};
+    addGlobalBinding(globals, "BaseClass", baseClassType, "@test");
 
     TypeId childClassInstanceType = arena.addType(ClassType{"ChildClass", {}, baseClassInstanceType, nullopt, {}, {}, "Test"});
 
     getMutable<ClassType>(childClassInstanceType)->props = {
-        {"Method", {makeFunction(arena, childClassInstanceType, {}, {typeChecker.stringType})}},
+        {"Method", {makeFunction(arena, childClassInstanceType, {}, {stringType})}},
     };
 
     TypeId childClassType = arena.addType(ClassType{"ChildClass", {}, baseClassType, nullopt, {}, {}, "Test"});
     getMutable<ClassType>(childClassType)->props = {
         {"New", {makeFunction(arena, nullopt, {}, {childClassInstanceType})}},
     };
-    typeChecker.globalScope->exportedTypeBindings["ChildClass"] = TypeFun{{}, childClassInstanceType};
-    addGlobalBinding(frontend, "ChildClass", childClassType, "@test");
+    globals.globalScope->exportedTypeBindings["ChildClass"] = TypeFun{{}, childClassInstanceType};
+    addGlobalBinding(globals, "ChildClass", childClassType, "@test");
 
     TypeId grandChildInstanceType = arena.addType(ClassType{"GrandChild", {}, childClassInstanceType, nullopt, {}, {}, "Test"});
 
     getMutable<ClassType>(grandChildInstanceType)->props = {
-        {"Method", {makeFunction(arena, grandChildInstanceType, {}, {typeChecker.stringType})}},
+        {"Method", {makeFunction(arena, grandChildInstanceType, {}, {stringType})}},
     };
 
     TypeId grandChildType = arena.addType(ClassType{"GrandChild", {}, baseClassType, nullopt, {}, {}, "Test"});
     getMutable<ClassType>(grandChildType)->props = {
         {"New", {makeFunction(arena, nullopt, {}, {grandChildInstanceType})}},
     };
-    typeChecker.globalScope->exportedTypeBindings["GrandChild"] = TypeFun{{}, grandChildInstanceType};
-    addGlobalBinding(frontend, "GrandChild", childClassType, "@test");
+    globals.globalScope->exportedTypeBindings["GrandChild"] = TypeFun{{}, grandChildInstanceType};
+    addGlobalBinding(globals, "GrandChild", childClassType, "@test");
 
     TypeId anotherChildInstanceType = arena.addType(ClassType{"AnotherChild", {}, baseClassInstanceType, nullopt, {}, {}, "Test"});
 
     getMutable<ClassType>(anotherChildInstanceType)->props = {
-        {"Method", {makeFunction(arena, anotherChildInstanceType, {}, {typeChecker.stringType})}},
+        {"Method", {makeFunction(arena, anotherChildInstanceType, {}, {stringType})}},
     };
 
     TypeId anotherChildType = arena.addType(ClassType{"AnotherChild", {}, baseClassType, nullopt, {}, {}, "Test"});
     getMutable<ClassType>(anotherChildType)->props = {
         {"New", {makeFunction(arena, nullopt, {}, {anotherChildInstanceType})}},
     };
-    typeChecker.globalScope->exportedTypeBindings["AnotherChild"] = TypeFun{{}, anotherChildInstanceType};
-    addGlobalBinding(frontend, "AnotherChild", childClassType, "@test");
+    globals.globalScope->exportedTypeBindings["AnotherChild"] = TypeFun{{}, anotherChildInstanceType};
+    addGlobalBinding(globals, "AnotherChild", childClassType, "@test");
 
     TypeId unrelatedClassInstanceType = arena.addType(ClassType{"UnrelatedClass", {}, nullopt, nullopt, {}, {}, "Test"});
 
@@ -76,8 +78,8 @@ ClassFixture::ClassFixture()
     getMutable<ClassType>(unrelatedClassType)->props = {
         {"New", {makeFunction(arena, nullopt, {}, {unrelatedClassInstanceType})}},
     };
-    typeChecker.globalScope->exportedTypeBindings["UnrelatedClass"] = TypeFun{{}, unrelatedClassInstanceType};
-    addGlobalBinding(frontend, "UnrelatedClass", unrelatedClassType, "@test");
+    globals.globalScope->exportedTypeBindings["UnrelatedClass"] = TypeFun{{}, unrelatedClassInstanceType};
+    addGlobalBinding(globals, "UnrelatedClass", unrelatedClassType, "@test");
 
     TypeId vector2MetaType = arena.addType(TableType{});
 
@@ -94,17 +96,29 @@ ClassFixture::ClassFixture()
     getMutable<TableType>(vector2MetaType)->props = {
         {"__add", {makeFunction(arena, nullopt, {vector2InstanceType, vector2InstanceType}, {vector2InstanceType})}},
     };
-    typeChecker.globalScope->exportedTypeBindings["Vector2"] = TypeFun{{}, vector2InstanceType};
-    addGlobalBinding(frontend, "Vector2", vector2Type, "@test");
+    globals.globalScope->exportedTypeBindings["Vector2"] = TypeFun{{}, vector2InstanceType};
+    addGlobalBinding(globals, "Vector2", vector2Type, "@test");
 
     TypeId callableClassMetaType = arena.addType(TableType{});
     TypeId callableClassType = arena.addType(ClassType{"CallableClass", {}, nullopt, callableClassMetaType, {}, {}, "Test"});
     getMutable<TableType>(callableClassMetaType)->props = {
-        {"__call", {makeFunction(arena, nullopt, {callableClassType, typeChecker.stringType}, {typeChecker.numberType})}},
+        {"__call", {makeFunction(arena, nullopt, {callableClassType, stringType}, {numberType})}},
     };
-    typeChecker.globalScope->exportedTypeBindings["CallableClass"] = TypeFun{{}, callableClassType};
+    globals.globalScope->exportedTypeBindings["CallableClass"] = TypeFun{{}, callableClassType};
 
-    for (const auto& [name, tf] : typeChecker.globalScope->exportedTypeBindings)
+    auto addIndexableClass = [&arena, &globals](const char* className, TypeId keyType, TypeId returnType) {
+        TypeId indexableClassMetaType = arena.addType(TableType{});
+        TypeId indexableClassType =
+            arena.addType(ClassType{className, {}, nullopt, indexableClassMetaType, {}, {}, "Test", TableIndexer{keyType, returnType}});
+        globals.globalScope->exportedTypeBindings[className] = TypeFun{{}, indexableClassType};
+    };
+
+    // IndexableClass has a table indexer with a key type of 'number | string' and a return type of 'number'
+    addIndexableClass("IndexableClass", arena.addType(Luau::UnionType{{stringType, numberType}}), numberType);
+    // IndexableNumericKeyClass has a table indexer with a key type of 'number' and a return type of 'number'
+    addIndexableClass("IndexableNumericKeyClass", numberType, numberType);
+
+    for (const auto& [name, tf] : globals.globalScope->exportedTypeBindings)
         persist(tf.type);
 
     freeze(arena);

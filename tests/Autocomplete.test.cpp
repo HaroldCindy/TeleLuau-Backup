@@ -15,7 +15,6 @@
 
 LUAU_FASTFLAG(LuauTraceTypesInNonstrictMode2)
 LUAU_FASTFLAG(LuauSetMetatableDoesNotTimeTravel)
-LUAU_FASTFLAG(LuauFixAutocompleteInIf)
 
 using namespace Luau;
 
@@ -84,10 +83,11 @@ struct ACFixtureImpl : BaseType
 
     LoadDefinitionFileResult loadDefinition(const std::string& source)
     {
-        TypeChecker& typeChecker = this->frontend.typeCheckerForAutocomplete;
-        unfreeze(typeChecker.globalTypes);
-        LoadDefinitionFileResult result = loadDefinitionFile(typeChecker, typeChecker.globalScope, source, "@test");
-        freeze(typeChecker.globalTypes);
+        GlobalTypes& globals = this->frontend.globalsForAutocomplete;
+        unfreeze(globals.globalTypes);
+        LoadDefinitionFileResult result = this->frontend.loadDefinitionFile(
+            globals, globals.globalScope, source, "@test", /* captureComments */ false, /* typeCheckForAutocomplete */ true);
+        freeze(globals.globalTypes);
 
         REQUIRE_MESSAGE(result.success, "loadDefinition: unable to load definition file");
         return result;
@@ -109,10 +109,10 @@ struct ACFixture : ACFixtureImpl<Fixture>
     ACFixture()
         : ACFixtureImpl<Fixture>()
     {
-        addGlobalBinding(frontend, "table", Binding{typeChecker.anyType});
-        addGlobalBinding(frontend, "math", Binding{typeChecker.anyType});
-        addGlobalBinding(frontend.typeCheckerForAutocomplete, "table", Binding{typeChecker.anyType});
-        addGlobalBinding(frontend.typeCheckerForAutocomplete, "math", Binding{typeChecker.anyType});
+        addGlobalBinding(frontend.globals, "table", Binding{builtinTypes->anyType});
+        addGlobalBinding(frontend.globals, "math", Binding{builtinTypes->anyType});
+        addGlobalBinding(frontend.globalsForAutocomplete, "table", Binding{builtinTypes->anyType});
+        addGlobalBinding(frontend.globalsForAutocomplete, "math", Binding{builtinTypes->anyType});
     }
 };
 
@@ -380,7 +380,7 @@ TEST_CASE_FIXTURE(ACFixture, "table_intersection")
 {
     check(R"(
         type t1 = { a1 : string, b2 : number }
-        type t2 = { b2 : string, c3 : string }
+        type t2 = { b2 : number, c3 : string }
         function func(abc : t1 & t2)
             abc.  @1
         end
@@ -629,9 +629,10 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_for_middle_keywords")
     )");
 
     auto ac5 = autocomplete('1');
-    CHECK_EQ(ac5.entryMap.count("do"), 1);
+    CHECK_EQ(ac5.entryMap.count("math"), 1);
+    CHECK_EQ(ac5.entryMap.count("do"), 0);
     CHECK_EQ(ac5.entryMap.count("end"), 0);
-    CHECK_EQ(ac5.context, AutocompleteContext::Keyword);
+    CHECK_EQ(ac5.context, AutocompleteContext::Expression);
 
     check(R"(
         for x = 1, 2, 5 f@1
@@ -649,6 +650,28 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_for_middle_keywords")
     auto ac7 = autocomplete('1');
     CHECK_EQ(ac7.entryMap.count("end"), 1);
     CHECK_EQ(ac7.context, AutocompleteContext::Statement);
+
+    check(R"(local Foo = 1
+        for x = @11, @22, @35
+    )");
+
+    for (int i = 0; i < 3; ++i)
+    {
+        auto ac8 = autocomplete('1' + i);
+        CHECK_EQ(ac8.entryMap.count("Foo"), 1);
+        CHECK_EQ(ac8.entryMap.count("do"), 0);
+    }
+
+    check(R"(local Foo = 1
+        for x = @11, @22
+    )");
+
+    for (int i = 0; i < 2; ++i)
+    {
+        auto ac9 = autocomplete('1' + i);
+        CHECK_EQ(ac9.entryMap.count("Foo"), 1);
+        CHECK_EQ(ac9.entryMap.count("do"), 0);
+    }
 }
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_for_in_middle_keywords")
@@ -740,8 +763,10 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_while_middle_keywords")
     )");
 
     auto ac2 = autocomplete('1');
-    CHECK_EQ(1, ac2.entryMap.size());
+    CHECK_EQ(3, ac2.entryMap.size());
     CHECK_EQ(ac2.entryMap.count("do"), 1);
+    CHECK_EQ(ac2.entryMap.count("and"), 1);
+    CHECK_EQ(ac2.entryMap.count("or"), 1);
     CHECK_EQ(ac2.context, AutocompleteContext::Keyword);
 
     check(R"(
@@ -757,9 +782,20 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_while_middle_keywords")
     )");
 
     auto ac4 = autocomplete('1');
-    CHECK_EQ(1, ac4.entryMap.size());
+    CHECK_EQ(3, ac4.entryMap.size());
     CHECK_EQ(ac4.entryMap.count("do"), 1);
+    CHECK_EQ(ac4.entryMap.count("and"), 1);
+    CHECK_EQ(ac4.entryMap.count("or"), 1);
     CHECK_EQ(ac4.context, AutocompleteContext::Keyword);
+
+    check(R"(
+        while t@1
+    )");
+
+    auto ac5 = autocomplete('1');
+    CHECK_EQ(ac5.entryMap.count("do"), 0);
+    CHECK_EQ(ac5.entryMap.count("true"), 1);
+    CHECK_EQ(ac5.entryMap.count("false"), 1);
 }
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_if_middle_keywords")
@@ -790,30 +826,16 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_if_middle_keywords")
     CHECK_EQ(ac2.entryMap.count("end"), 0);
     CHECK_EQ(ac2.context, AutocompleteContext::Keyword);
 
-    if (FFlag::LuauFixAutocompleteInIf)
-    {
-        check(R"(
-            if x t@1
-        )");
+    check(R"(
+        if x t@1
+    )");
 
-        auto ac3 = autocomplete('1');
-        CHECK_EQ(3, ac3.entryMap.size());
-        CHECK_EQ(ac3.entryMap.count("then"), 1);
-        CHECK_EQ(ac3.entryMap.count("and"), 1);
-        CHECK_EQ(ac3.entryMap.count("or"), 1);
-        CHECK_EQ(ac3.context, AutocompleteContext::Keyword);
-    }
-    else
-    {
-        check(R"(
-            if x t@1
-        )");
-
-        auto ac3 = autocomplete('1');
-        CHECK_EQ(1, ac3.entryMap.size());
-        CHECK_EQ(ac3.entryMap.count("then"), 1);
-        CHECK_EQ(ac3.context, AutocompleteContext::Keyword);
-    }
+    auto ac3 = autocomplete('1');
+    CHECK_EQ(3, ac3.entryMap.size());
+    CHECK_EQ(ac3.entryMap.count("then"), 1);
+    CHECK_EQ(ac3.entryMap.count("and"), 1);
+    CHECK_EQ(ac3.entryMap.count("or"), 1);
+    CHECK_EQ(ac3.context, AutocompleteContext::Keyword);
 
     check(R"(
         if x then
@@ -856,23 +878,20 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_if_middle_keywords")
     CHECK_EQ(ac5.entryMap.count("elseif"), 0);
     CHECK_EQ(ac5.entryMap.count("end"), 0);
     CHECK_EQ(ac5.context, AutocompleteContext::Statement);
-    
-    if (FFlag::LuauFixAutocompleteInIf)
-    {
-        check(R"(
-            if t@1
-        )");
 
-        auto ac6 = autocomplete('1');
-        CHECK_EQ(ac6.entryMap.count("true"), 1);
-        CHECK_EQ(ac6.entryMap.count("false"), 1);
-        CHECK_EQ(ac6.entryMap.count("then"), 0);
-        CHECK_EQ(ac6.entryMap.count("function"), 1);
-        CHECK_EQ(ac6.entryMap.count("else"), 0);
-        CHECK_EQ(ac6.entryMap.count("elseif"), 0);
-        CHECK_EQ(ac6.entryMap.count("end"), 0);
-        CHECK_EQ(ac6.context, AutocompleteContext::Expression);
-    }
+    check(R"(
+        if t@1
+    )");
+
+    auto ac6 = autocomplete('1');
+    CHECK_EQ(ac6.entryMap.count("true"), 1);
+    CHECK_EQ(ac6.entryMap.count("false"), 1);
+    CHECK_EQ(ac6.entryMap.count("then"), 0);
+    CHECK_EQ(ac6.entryMap.count("function"), 1);
+    CHECK_EQ(ac6.entryMap.count("else"), 0);
+    CHECK_EQ(ac6.entryMap.count("elseif"), 0);
+    CHECK_EQ(ac6.entryMap.count("end"), 0);
+    CHECK_EQ(ac6.context, AutocompleteContext::Expression);
 }
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_until_in_repeat")
@@ -2745,8 +2764,6 @@ a = if temp then even else abc@3
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_interpolated_string_constant")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     check(R"(f(`@1`))");
     auto ac = autocomplete('1');
     CHECK(ac.entryMap.empty());
@@ -2770,8 +2787,6 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_interpolated_string_constant")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_interpolated_string_expression")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     check(R"(f(`expression = {@1}`))");
     auto ac = autocomplete('1');
     CHECK(ac.entryMap.count("table"));
@@ -2780,8 +2795,6 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_interpolated_string_expression")
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_interpolated_string_expression_with_comments")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     check(R"(f(`expression = {--[[ bla bla bla ]]@1`))");
 
     auto ac = autocomplete('1');
@@ -2797,8 +2810,6 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_interpolated_string_expression_with_c
 
 TEST_CASE_FIXTURE(ACFixture, "autocomplete_interpolated_string_as_singleton")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     check(R"(
         --!strict
         local function f(a: "cat" | "dog") end
@@ -2984,8 +2995,6 @@ TEST_CASE_FIXTURE(ACFixture, "autocomplete_string_singletons")
 
 TEST_CASE_FIXTURE(ACFixture, "string_singleton_as_table_key")
 {
-    ScopedFastFlag sff{"LuauCompleteTableKeysBetter", true};
-
     check(R"(
         type Direction = "up" | "down"
 
@@ -3153,6 +3162,20 @@ t.@1
         CHECK(ac.entryMap["one"].wrongIndexType);
         CHECK(!ac.entryMap["two"].wrongIndexType);
     }
+}
+
+TEST_CASE_FIXTURE(ACFixture, "simple")
+{
+    check(R"(
+local t = {}
+function t:m() end
+t:m()
+    )");
+
+    // auto ac = autocomplete('1');
+
+    //  REQUIRE(ac.entryMap.count("m"));
+    // CHECK(!ac.entryMap["m"].wrongIndexType);
 }
 
 TEST_CASE_FIXTURE(ACFixture, "do_compatible_self_calls")
@@ -3365,63 +3388,105 @@ TEST_CASE_FIXTURE(ACFixture, "globals_are_order_independent")
     CHECK(ac.entryMap.count("abc1"));
 }
 
-TEST_CASE_FIXTURE(ACFixture, "type_reduction_is_hooked_up_to_autocomplete")
-{
-    check(R"(
-        type T = { x: (number & string)? }
-
-        function f(thingamabob: T)
-            thingamabob.@1
-        end
-
-        function g(thingamabob: T)
-            thingama@2
-        end
-    )");
-
-    ToStringOptions opts;
-    opts.exhaustive = true;
-
-    auto ac1 = autocomplete('1');
-    REQUIRE(ac1.entryMap.count("x"));
-    std::optional<TypeId> ty1 = ac1.entryMap.at("x").type;
-    REQUIRE(ty1);
-    CHECK("(number & string)?" == toString(*ty1, opts));
-    // CHECK("nil" == toString(*ty1, opts));
-
-    auto ac2 = autocomplete('2');
-    REQUIRE(ac2.entryMap.count("thingamabob"));
-    std::optional<TypeId> ty2 = ac2.entryMap.at("thingamabob").type;
-    REQUIRE(ty2);
-    CHECK("{| x: (number & string)? |}" == toString(*ty2, opts));
-    // CHECK("{| x: nil |}" == toString(*ty2, opts));
-}
-
 TEST_CASE_FIXTURE(ACFixture, "string_contents_is_available_to_callback")
 {
     loadDefinition(R"(
         declare function require(path: string): any
     )");
 
-    std::optional<Binding> require = frontend.typeCheckerForAutocomplete.globalScope->linearSearchForBinding("require");
+    std::optional<Binding> require = frontend.globalsForAutocomplete.globalScope->linearSearchForBinding("require");
     REQUIRE(require);
-    Luau::unfreeze(frontend.typeCheckerForAutocomplete.globalTypes);
+    Luau::unfreeze(frontend.globalsForAutocomplete.globalTypes);
     attachTag(require->typeId, "RequireCall");
-    Luau::freeze(frontend.typeCheckerForAutocomplete.globalTypes);
+    Luau::freeze(frontend.globalsForAutocomplete.globalTypes);
 
     check(R"(
         local x = require("testing/@1")
     )");
 
     bool isCorrect = false;
-    auto ac1 = autocomplete('1',
-        [&isCorrect](std::string, std::optional<const ClassType*>, std::optional<std::string> contents) -> std::optional<AutocompleteEntryMap>
-        {
-            isCorrect = contents.has_value() && contents.value() == "testing/";
+    auto ac1 = autocomplete(
+        '1', [&isCorrect](std::string, std::optional<const ClassType*>, std::optional<std::string> contents) -> std::optional<AutocompleteEntryMap> {
+            isCorrect = contents && *contents == "testing/";
             return std::nullopt;
         });
 
     CHECK(isCorrect);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "autocomplete_response_perf1" * doctest::timeout(0.5))
+{
+    // Build a function type with a large overload set
+    const int parts = 100;
+    std::string source;
+
+    for (int i = 0; i < parts; i++)
+        formatAppend(source, "type T%d = { f%d: number }\n", i, i);
+
+    source += "type Instance = { new: (('s0', extra: Instance?) -> T0)";
+
+    for (int i = 1; i < parts; i++)
+        formatAppend(source, " & (('s%d', extra: Instance?) -> T%d)", i, i);
+
+    source += " }\n";
+
+    source += "local Instance: Instance = {} :: any\n";
+    source += "local function c(): boolean return t@1 end\n";
+
+    check(source);
+
+    auto ac = autocomplete('1');
+
+    CHECK(ac.entryMap.count("true"));
+    CHECK(ac.entryMap.count("Instance"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "strict_mode_force")
+{
+    check(R"(
+--!nonstrict
+local a: {x: number} = {x=1}
+local b = a
+local c = b.@1
+    )");
+
+    auto ac = autocomplete('1');
+
+    CHECK_EQ(1, ac.entryMap.size());
+    CHECK(ac.entryMap.count("x"));
+}
+
+TEST_CASE_FIXTURE(ACFixture, "suggest_exported_types")
+{
+    check(R"(
+export type Type = {a: number}
+local a: T@1
+    )");
+
+    auto ac = autocomplete('1');
+
+    CHECK(ac.entryMap.count("Type"));
+    CHECK_EQ(ac.context, AutocompleteContext::Type);
+}
+
+TEST_CASE_FIXTURE(ACFixture, "frontend_use_correct_global_scope")
+{
+    loadDefinition(R"(
+        declare class Instance
+            Name: string
+        end
+    )");
+
+    CheckResult result = check(R"(
+        local a: unknown = nil
+        if typeof(a) == "Instance" then
+            local b = a.@1
+        end
+    )");
+    auto ac = autocomplete('1');
+
+    CHECK_EQ(1, ac.entryMap.size());
+    CHECK(ac.entryMap.count("Name"));
 }
 
 TEST_SUITE_END();

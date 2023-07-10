@@ -647,10 +647,11 @@ void AstStatLocalFunction::visit(AstVisitor* visitor)
         func->visit(visitor);
 }
 
-AstStatTypeAlias::AstStatTypeAlias(const Location& location, const AstName& name, const AstArray<AstGenericType>& generics,
-    const AstArray<AstGenericTypePack>& genericPacks, AstType* type, bool exported)
+AstStatTypeAlias::AstStatTypeAlias(const Location& location, const AstName& name, const Location& nameLocation,
+    const AstArray<AstGenericType>& generics, const AstArray<AstGenericTypePack>& genericPacks, AstType* type, bool exported)
     : AstStat(ClassIndex(), location)
     , name(name)
+    , nameLocation(nameLocation)
     , generics(generics)
     , genericPacks(genericPacks)
     , type(type)
@@ -713,12 +714,13 @@ void AstStatDeclareFunction::visit(AstVisitor* visitor)
     }
 }
 
-AstStatDeclareClass::AstStatDeclareClass(
-    const Location& location, const AstName& name, std::optional<AstName> superName, const AstArray<AstDeclaredClassProp>& props)
+AstStatDeclareClass::AstStatDeclareClass(const Location& location, const AstName& name, std::optional<AstName> superName,
+    const AstArray<AstDeclaredClassProp>& props, AstTableIndexer* indexer)
     : AstStat(ClassIndex(), location)
     , name(name)
     , superName(superName)
     , props(props)
+    , indexer(indexer)
 {
 }
 
@@ -752,12 +754,14 @@ void AstStatError::visit(AstVisitor* visitor)
     }
 }
 
-AstTypeReference::AstTypeReference(
-    const Location& location, std::optional<AstName> prefix, AstName name, bool hasParameterList, const AstArray<AstTypeOrPack>& parameters)
+AstTypeReference::AstTypeReference(const Location& location, std::optional<AstName> prefix, AstName name, std::optional<Location> prefixLocation,
+    const Location& nameLocation, bool hasParameterList, const AstArray<AstTypeOrPack>& parameters)
     : AstType(ClassIndex(), location)
     , hasParameterList(hasParameterList)
     , prefix(prefix)
+    , prefixLocation(prefixLocation)
     , name(name)
+    , nameLocation(nameLocation)
     , parameters(parameters)
 {
 }

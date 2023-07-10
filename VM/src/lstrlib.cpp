@@ -9,8 +9,6 @@
 #include <string.h>
 #include <stdio.h>
 
-LUAU_FASTFLAGVARIABLE(LuauStringFormatAnyFix, false)
-
 // macro to `unsign' a character
 #define uchar(c) ((unsigned char)(c))
 
@@ -1040,21 +1038,11 @@ static int str_format(lua_State* L)
                 if (formatItemSize != 1)
                     luaL_error(L, "'%%*' does not take a form");
 
-                if (FFlag::LuauStringFormatAnyFix)
-                {
-                    size_t length;
-                    const char* string = luaL_tolstring(L, arg, &length);
+                size_t length;
+                const char* string = luaL_tolstring(L, arg, &length);
 
-                    luaL_addlstring(&b, string, length, -2);
-                    lua_pop(L, 1);
-                }
-                else
-                {
-                    size_t length;
-                    const char* string = luaL_tolstring(L, arg, &length);
-
-                    luaL_addlstring(&b, string, length, -1);
-                }
+                luaL_addlstring(&b, string, length, -2);
+                lua_pop(L, 1);
 
                 continue; // skip the `luaL_addlstring' at the end
             }
@@ -1458,7 +1446,7 @@ static int str_pack(lua_State* L)
             const char* s = luaL_checklstring(L, arg, &len);
             luaL_argcheck(L, len <= (size_t)size, arg, "string longer than given size");
             luaL_addlstring(&b, s, len, -1); // add string
-            while (len++ < (size_t)size) // pad extra space
+            while (len++ < (size_t)size)     // pad extra space
                 luaL_addchar(&b, LUAL_PACKPADBYTE);
             break;
         }

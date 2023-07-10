@@ -44,6 +44,10 @@ ANALYZE_CLI_SOURCES=CLI/FileUtils.cpp CLI/Flags.cpp CLI/Analyze.cpp
 ANALYZE_CLI_OBJECTS=$(ANALYZE_CLI_SOURCES:%=$(BUILD)/%.o)
 ANALYZE_CLI_TARGET=$(BUILD)/luau-analyze
 
+COMPILE_CLI_SOURCES=CLI/FileUtils.cpp CLI/Flags.cpp CLI/Compile.cpp
+COMPILE_CLI_OBJECTS=$(COMPILE_CLI_SOURCES:%=$(BUILD)/%.o)
+COMPILE_CLI_TARGET=$(BUILD)/luau-compile
+
 FUZZ_SOURCES=$(wildcard fuzz/*.cpp) fuzz/luau.pb.cpp
 FUZZ_OBJECTS=$(FUZZ_SOURCES:%=$(BUILD)/%.o)
 
@@ -55,8 +59,8 @@ ifneq ($(opt),)
 	TESTS_ARGS+=-O$(opt)
 endif
 
-OBJECTS=$(AST_OBJECTS) $(COMPILER_OBJECTS) $(ANALYSIS_OBJECTS) $(CODEGEN_OBJECTS) $(VM_OBJECTS) $(ISOCLINE_OBJECTS) $(TESTS_OBJECTS) $(CLI_OBJECTS) $(FUZZ_OBJECTS)
-EXECUTABLE_ALIASES = luau luau-analyze luau-tests
+OBJECTS=$(AST_OBJECTS) $(COMPILER_OBJECTS) $(ANALYSIS_OBJECTS) $(CODEGEN_OBJECTS) $(VM_OBJECTS) $(ISOCLINE_OBJECTS) $(TESTS_OBJECTS) $(REPL_CLI_OBJECTS) $(ANALYZE_CLI_OBJECTS) $(COMPILE_CLI_OBJECTS) $(FUZZ_OBJECTS)
+EXECUTABLE_ALIASES = luau luau-analyze luau-compile luau-tests
 
 # common flags
 CXXFLAGS+=-g -Wall
@@ -117,6 +121,11 @@ ifneq ($(native),)
 	TESTS_ARGS+=--codegen
 endif
 
+ifneq ($(nativelj),)
+	CXXFLAGS+=-DLUA_CUSTOM_EXECUTION=1 -DLUA_USE_LONGJMP=1
+	TESTS_ARGS+=--codegen
+endif
+
 # target-specific flags
 $(AST_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include
 $(COMPILER_OBJECTS): CXXFLAGS+=-std=c++17 -ICompiler/include -ICommon/include -IAst/include
@@ -127,10 +136,12 @@ $(ISOCLINE_OBJECTS): CXXFLAGS+=-Wno-unused-function -Iextern/isocline/include
 $(TESTS_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -ICompiler/include -IAnalysis/include -ICodeGen/include -IVM/include -ICLI -Iextern -DDOCTEST_CONFIG_DOUBLE_STRINGIFY
 $(REPL_CLI_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -ICompiler/include -IVM/include -ICodeGen/include -Iextern -Iextern/isocline/include
 $(ANALYZE_CLI_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -IAnalysis/include -Iextern
-$(FUZZ_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -ICompiler/include -IAnalysis/include -IVM/include
+$(COMPILE_CLI_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -ICompiler/include -IVM/include -ICodeGen/include
+$(FUZZ_OBJECTS): CXXFLAGS+=-std=c++17 -ICommon/include -IAst/include -ICompiler/include -IAnalysis/include -IVM/include -ICodeGen/include
 
 $(TESTS_TARGET): LDFLAGS+=-lpthread
 $(REPL_CLI_TARGET): LDFLAGS+=-lpthread
+$(ANALYZE_CLI_TARGET): LDFLAGS+=-lpthread
 fuzz-proto fuzz-prototest: LDFLAGS+=build/libprotobuf-mutator/src/libfuzzer/libprotobuf-mutator-libfuzzer.a build/libprotobuf-mutator/src/libprotobuf-mutator.a $(LPROTOBUF)
 
 # pseudo targets
@@ -143,11 +154,14 @@ aliases: $(EXECUTABLE_ALIASES)
 test: $(TESTS_TARGET)
 	$(TESTS_TARGET) $(TESTS_ARGS)
 
+conformance: $(TESTS_TARGET)
+	$(TESTS_TARGET) $(TESTS_ARGS) -ts=Conformance
+
 clean:
 	rm -rf $(BUILD)
 	rm -rf $(EXECUTABLE_ALIASES)
 
-coverage: $(TESTS_TARGET)
+coverage: $(TESTS_TARGET) $(COMPILE_CLI_TARGET)
 	$(TESTS_TARGET)
 	mv default.profraw tests.profraw
 	$(TESTS_TARGET) --fflags=true
@@ -156,11 +170,15 @@ coverage: $(TESTS_TARGET)
 	mv default.profraw codegen.profraw
 	$(TESTS_TARGET) -ts=Conformance --codegen --fflags=true
 	mv default.profraw codegen-flags.profraw
-	llvm-profdata merge tests.profraw tests-flags.profraw codegen.profraw codegen-flags.profraw -o default.profdata
+	$(COMPILE_CLI_TARGET) --codegennull --target=a64 tests/conformance
+	mv default.profraw codegen-a64.profraw
+	$(COMPILE_CLI_TARGET) --codegennull --target=x64 tests/conformance
+	mv default.profraw codegen-x64.profraw
+	llvm-profdata merge *.profraw -o default.profdata
 	rm *.profraw
-	llvm-cov show -format=html -show-instantiations=false -show-line-counts=true -show-region-summary=false -ignore-filename-regex=\(tests\|extern\|CLI\)/.* -output-dir=coverage --instr-profile default.profdata build/coverage/luau-tests
-	llvm-cov report -ignore-filename-regex=\(tests\|extern\|CLI\)/.* -show-region-summary=false --instr-profile default.profdata build/coverage/luau-tests
-	llvm-cov export -ignore-filename-regex=\(tests\|extern\|CLI\)/.* -format lcov --instr-profile default.profdata build/coverage/luau-tests >coverage.info
+	llvm-cov show -format=html -show-instantiations=false -show-line-counts=true -show-region-summary=false -ignore-filename-regex=\(tests\|extern\|CLI\)/.* -output-dir=coverage --instr-profile default.profdata -object build/coverage/luau-tests -object build/coverage/luau-compile
+	llvm-cov report -ignore-filename-regex=\(tests\|extern\|CLI\)/.* -show-region-summary=false --instr-profile default.profdata -object build/coverage/luau-tests -object build/coverage/luau-compile
+	llvm-cov export -ignore-filename-regex=\(tests\|extern\|CLI\)/.* -format lcov --instr-profile default.profdata -object build/coverage/luau-tests -object build/coverage/luau-compile >coverage.info
 
 format:
 	git ls-files '*.h' '*.cpp' | xargs clang-format-11 -i
@@ -180,6 +198,9 @@ luau: $(REPL_CLI_TARGET)
 luau-analyze: $(ANALYZE_CLI_TARGET)
 	ln -fs $^ $@
 
+luau-compile: $(COMPILE_CLI_TARGET)
+	ln -fs $^ $@
+
 luau-tests: $(TESTS_TARGET)
 	ln -fs $^ $@
 
@@ -187,12 +208,13 @@ luau-tests: $(TESTS_TARGET)
 $(TESTS_TARGET): $(TESTS_OBJECTS) $(ANALYSIS_TARGET) $(COMPILER_TARGET) $(AST_TARGET) $(CODEGEN_TARGET) $(VM_TARGET) $(ISOCLINE_TARGET)
 $(REPL_CLI_TARGET): $(REPL_CLI_OBJECTS) $(COMPILER_TARGET) $(AST_TARGET) $(CODEGEN_TARGET) $(VM_TARGET) $(ISOCLINE_TARGET)
 $(ANALYZE_CLI_TARGET): $(ANALYZE_CLI_OBJECTS) $(ANALYSIS_TARGET) $(AST_TARGET)
+$(COMPILE_CLI_TARGET): $(COMPILE_CLI_OBJECTS) $(COMPILER_TARGET) $(AST_TARGET) $(CODEGEN_TARGET) $(VM_TARGET)
 
-$(TESTS_TARGET) $(REPL_CLI_TARGET) $(ANALYZE_CLI_TARGET):
+$(TESTS_TARGET) $(REPL_CLI_TARGET) $(ANALYZE_CLI_TARGET) $(COMPILE_CLI_TARGET):
 	$(CXX) $^ $(LDFLAGS) -o $@
 
 # executable targets for fuzzing
-fuzz-%: $(BUILD)/fuzz/%.cpp.o $(ANALYSIS_TARGET) $(COMPILER_TARGET) $(AST_TARGET) $(VM_TARGET)
+fuzz-%: $(BUILD)/fuzz/%.cpp.o $(ANALYSIS_TARGET) $(COMPILER_TARGET) $(AST_TARGET) $(CODEGEN_TARGET) $(VM_TARGET)
 	$(CXX) $^ $(LDFLAGS) -o $@
 
 fuzz-proto: $(BUILD)/fuzz/proto.cpp.o $(BUILD)/fuzz/protoprint.cpp.o $(BUILD)/fuzz/luau.pb.cpp.o $(ANALYSIS_TARGET) $(COMPILER_TARGET) $(AST_TARGET) $(VM_TARGET) | build/libprotobuf-mutator

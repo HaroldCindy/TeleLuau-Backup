@@ -11,7 +11,7 @@
 
 #include <algorithm>
 
-LUAU_FASTFLAG(LuauCompleteTableKeysBetter);
+LUAU_FASTFLAG(DebugLuauReadWriteProperties)
 
 namespace Luau
 {
@@ -31,24 +31,12 @@ struct AutocompleteNodeFinder : public AstVisitor
 
     bool visit(AstExpr* expr) override
     {
-        if (FFlag::LuauCompleteTableKeysBetter)
+        if (expr->location.begin <= pos && pos <= expr->location.end)
         {
-            if (expr->location.begin <= pos && pos <= expr->location.end)
-            {
-                ancestry.push_back(expr);
-                return true;
-            }
-            return false;
+            ancestry.push_back(expr);
+            return true;
         }
-        else
-        {
-            if (expr->location.begin < pos && pos <= expr->location.end)
-            {
-                ancestry.push_back(expr);
-                return true;
-            }
-            return false;
-        }
+        return false;
     }
 
     bool visit(AstStat* stat) override
@@ -183,14 +171,24 @@ struct FindFullAncestry final : public AstVisitor
     std::vector<AstNode*> nodes;
     Position pos;
     Position documentEnd;
+    bool includeTypes = false;
 
-    explicit FindFullAncestry(Position pos, Position documentEnd)
+    explicit FindFullAncestry(Position pos, Position documentEnd, bool includeTypes = false)
         : pos(pos)
         , documentEnd(documentEnd)
+        , includeTypes(includeTypes)
     {
     }
 
-    bool visit(AstNode* node)
+    bool visit(AstType* type) override
+    {
+        if (includeTypes)
+            return visit(static_cast<AstNode*>(type));
+        else
+            return false;
+    }
+
+    bool visit(AstNode* node) override
     {
         if (node->location.contains(pos))
         {
@@ -215,33 +213,48 @@ struct FindFullAncestry final : public AstVisitor
 
 std::vector<AstNode*> findAncestryAtPositionForAutocomplete(const SourceModule& source, Position pos)
 {
-    AutocompleteNodeFinder finder{pos, source.root};
-    source.root->visit(&finder);
+    return findAncestryAtPositionForAutocomplete(source.root, pos);
+}
+
+std::vector<AstNode*> findAncestryAtPositionForAutocomplete(AstStatBlock* root, Position pos)
+{
+    AutocompleteNodeFinder finder{pos, root};
+    root->visit(&finder);
     return finder.ancestry;
 }
 
-std::vector<AstNode*> findAstAncestryOfPosition(const SourceModule& source, Position pos)
+std::vector<AstNode*> findAstAncestryOfPosition(const SourceModule& source, Position pos, bool includeTypes)
 {
-    const Position end = source.root->location.end;
+    return findAstAncestryOfPosition(source.root, pos, includeTypes);
+}
+
+std::vector<AstNode*> findAstAncestryOfPosition(AstStatBlock* root, Position pos, bool includeTypes)
+{
+    const Position end = root->location.end;
     if (pos > end)
         pos = end;
 
-    FindFullAncestry finder(pos, end);
-    source.root->visit(&finder);
+    FindFullAncestry finder(pos, end, includeTypes);
+    root->visit(&finder);
     return finder.nodes;
 }
 
 AstNode* findNodeAtPosition(const SourceModule& source, Position pos)
 {
-    const Position end = source.root->location.end;
-    if (pos < source.root->location.begin)
-        return source.root;
+    return findNodeAtPosition(source.root, pos);
+}
+
+AstNode* findNodeAtPosition(AstStatBlock* root, Position pos)
+{
+    const Position end = root->location.end;
+    if (pos < root->location.begin)
+        return root;
 
     if (pos > end)
         pos = end;
 
     FindNode findNode{pos, end};
-    findNode.visit(source.root);
+    findNode.visit(root);
     return findNode.best;
 }
 
@@ -490,12 +503,28 @@ std::optional<DocumentationSymbol> getDocumentationSymbolAtPosition(const Source
                 if (const TableType* ttv = get<TableType>(parentTy))
                 {
                     if (auto propIt = ttv->props.find(indexName->index.value); propIt != ttv->props.end())
-                        return checkOverloadedDocumentationSymbol(module, propIt->second.type, parentExpr, propIt->second.documentationSymbol);
+                    {
+                        if (FFlag::DebugLuauReadWriteProperties)
+                        {
+                            if (auto ty = propIt->second.readType())
+                                return checkOverloadedDocumentationSymbol(module, *ty, parentExpr, propIt->second.documentationSymbol);
+                        }
+                        else
+                            return checkOverloadedDocumentationSymbol(module, propIt->second.type(), parentExpr, propIt->second.documentationSymbol);
+                    }
                 }
                 else if (const ClassType* ctv = get<ClassType>(parentTy))
                 {
                     if (auto propIt = ctv->props.find(indexName->index.value); propIt != ctv->props.end())
-                        return checkOverloadedDocumentationSymbol(module, propIt->second.type, parentExpr, propIt->second.documentationSymbol);
+                    {
+                        if (FFlag::DebugLuauReadWriteProperties)
+                        {
+                            if (auto ty = propIt->second.readType())
+                                return checkOverloadedDocumentationSymbol(module, *ty, parentExpr, propIt->second.documentationSymbol);
+                        }
+                        else
+                            return checkOverloadedDocumentationSymbol(module, propIt->second.type(), parentExpr, propIt->second.documentationSymbol);
+                    }
                 }
             }
         }

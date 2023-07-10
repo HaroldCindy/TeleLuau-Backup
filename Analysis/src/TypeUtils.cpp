@@ -34,7 +34,7 @@ std::optional<TypeId> findMetatableEntry(
 
     auto it = mtt->props.find(entry);
     if (it != mtt->props.end())
-        return it->second.type;
+        return it->second.type();
     else
         return std::nullopt;
 }
@@ -49,7 +49,7 @@ std::optional<TypeId> findTablePropertyRespectingMeta(
     {
         const auto& it = tableType->props.find(name);
         if (it != tableType->props.end())
-            return it->second.type;
+            return it->second.type();
     }
 
     std::optional<TypeId> mtIndex = findMetatableEntry(builtinTypes, errors, ty, "__index", location);
@@ -67,7 +67,7 @@ std::optional<TypeId> findTablePropertyRespectingMeta(
         {
             const auto& fit = itt->props.find(name);
             if (fit != itt->props.end())
-                return fit->second.type;
+                return fit->second.type();
         }
         else if (const auto& itf = get<FunctionType>(index))
         {
@@ -117,7 +117,8 @@ std::pair<size_t, std::optional<size_t>> getParameterExtents(const TxnLog* log, 
         return {minCount, minCount + optionalCount};
 }
 
-TypePack extendTypePack(TypeArena& arena, NotNull<BuiltinTypes> builtinTypes, TypePackId pack, size_t length)
+TypePack extendTypePack(
+    TypeArena& arena, NotNull<BuiltinTypes> builtinTypes, TypePackId pack, size_t length, std::vector<std::optional<TypeId>> overrides)
 {
     TypePack result;
 
@@ -179,11 +180,22 @@ TypePack extendTypePack(TypeArena& arena, NotNull<BuiltinTypes> builtinTypes, Ty
 
             TypePack newPack;
             newPack.tail = arena.freshTypePack(ftp->scope);
-
+            size_t overridesIndex = 0;
             while (result.head.size() < length)
             {
-                newPack.head.push_back(arena.freshType(ftp->scope));
+                TypeId t;
+                if (overridesIndex < overrides.size() && overrides[overridesIndex])
+                {
+                    t = *overrides[overridesIndex];
+                }
+                else
+                {
+                    t = arena.freshType(ftp->scope);
+                }
+
+                newPack.head.push_back(t);
                 result.head.push_back(newPack.head.back());
+                overridesIndex++;
             }
 
             asMutable(pack)->ty.emplace<TypePack>(std::move(newPack));

@@ -12,8 +12,7 @@
 #include <unordered_set>
 #include <utility>
 
-LUAU_FASTFLAGVARIABLE(LuauCompleteTableKeysBetter, false);
-LUAU_FASTFLAGVARIABLE(LuauFixAutocompleteInIf, false);
+LUAU_FASTFLAG(DebugLuauReadWriteProperties)
 
 static const std::unordered_set<std::string> kStatementStartingKeywords = {
     "while", "if", "local", "repeat", "function", "do", "for", "return", "break", "continue", "type", "export"};
@@ -141,7 +140,11 @@ static bool checkTypeMatch(TypeId subTy, TypeId superTy, NotNull<Scope> scope, T
     InternalErrorReporter iceReporter;
     UnifierSharedState unifierState(&iceReporter);
     Normalizer normalizer{typeArena, builtinTypes, NotNull{&unifierState}};
-    Unifier unifier(NotNull<Normalizer>{&normalizer}, Mode::Strict, scope, Location(), Variance::Covariant);
+    Unifier unifier(NotNull<Normalizer>{&normalizer}, scope, Location(), Variance::Covariant);
+
+    // Cost of normalization can be too high for autocomplete response time requirements
+    unifier.normalize = false;
+    unifier.checkInhabited = false;
 
     return unifier.canUnify(subTy, superTy).empty();
 }
@@ -258,10 +261,22 @@ static void autocompleteProps(const Module& module, TypeArena* typeArena, NotNul
             // already populated, it takes precedence over the property we found just now.
             if (result.count(name) == 0 && name != kParseNameError)
             {
-                Luau::TypeId type = Luau::follow(prop.type);
+                Luau::TypeId type;
+
+                if (FFlag::DebugLuauReadWriteProperties)
+                {
+                    if (auto ty = prop.readType())
+                        type = follow(*ty);
+                    else
+                        continue;
+                }
+                else
+                    type = follow(prop.type());
+
                 TypeCorrectKind typeCorrect = indexType == PropIndexType::Key
                                                   ? TypeCorrectKind::Correct
                                                   : checkTypeCorrectKind(module, typeArena, builtinTypes, nodes.back(), {{}, {}}, type);
+
                 ParenthesesRecommendation parens =
                     indexType == PropIndexType::Key ? ParenthesesRecommendation::None : getParenRecommendation(type, nodes, typeCorrect);
 
@@ -285,7 +300,7 @@ static void autocompleteProps(const Module& module, TypeArena* typeArena, NotNul
         auto indexIt = mtable->props.find("__index");
         if (indexIt != mtable->props.end())
         {
-            TypeId followed = follow(indexIt->second.type);
+            TypeId followed = follow(indexIt->second.type());
             if (get<TableType>(followed) || get<MetatableType>(followed))
             {
                 autocompleteProps(module, typeArena, builtinTypes, rootTy, followed, indexType, nodes, result, seen);
@@ -312,7 +327,7 @@ static void autocompleteProps(const Module& module, TypeArena* typeArena, NotNul
     {
         autocompleteProps(module, typeArena, builtinTypes, rootTy, mt->table, indexType, nodes, result, seen);
 
-        if (auto mtable = get<TableType>(mt->metatable))
+        if (auto mtable = get<TableType>(follow(mt->metatable)))
             fillMetatableProps(mtable);
     }
     else if (auto i = get<IntersectionType>(ty))
@@ -973,25 +988,14 @@ T* extractStat(const std::vector<AstNode*>& ancestry)
     AstNode* grandParent = ancestry.size() >= 3 ? ancestry.rbegin()[2] : nullptr;
     AstNode* greatGrandParent = ancestry.size() >= 4 ? ancestry.rbegin()[3] : nullptr;
 
-    if (FFlag::LuauCompleteTableKeysBetter)
-    {
-        if (!grandParent)
-            return nullptr;
+    if (!grandParent)
+        return nullptr;
 
-        if (T* t = parent->as<T>(); t && grandParent->is<AstStatBlock>())
-            return t;
+    if (T* t = parent->as<T>(); t && grandParent->is<AstStatBlock>())
+        return t;
 
-        if (!greatGrandParent)
-            return nullptr;
-    }
-    else
-    {
-        if (T* t = parent->as<T>(); t && parent->is<AstStatBlock>())
-            return t;
-
-        if (!grandParent || !greatGrandParent)
-            return nullptr;
-    }
+    if (!greatGrandParent)
+        return nullptr;
 
     if (T* t = greatGrandParent->as<T>(); t && grandParent->is<AstStatBlock>() && parent->is<AstStatError>() && isIdentifier(node))
         return t;
@@ -1314,8 +1318,7 @@ static std::optional<AutocompleteEntryMap> autocompleteStringParams(const Source
 
     std::optional<std::string> candidateString = getStringContents(nodes.back());
 
-    auto performCallback = [&](const FunctionType* funcType) -> std::optional<AutocompleteEntryMap>
-    {
+    auto performCallback = [&](const FunctionType* funcType) -> std::optional<AutocompleteEntryMap> {
         for (const std::string& tag : funcType->tags)
         {
             if (std::optional<AutocompleteEntryMap> ret = callback(tag, getMethodContainingClass(module, candidate->func), candidateString))
@@ -1347,6 +1350,15 @@ static std::optional<AutocompleteEntryMap> autocompleteStringParams(const Source
     }
 
     return std::nullopt;
+}
+
+static AutocompleteResult autocompleteWhileLoopKeywords(std::vector<AstNode*> ancestry)
+{
+    AutocompleteEntryMap ret;
+    ret["do"] = {AutocompleteEntryKind::Keyword};
+    ret["and"] = {AutocompleteEntryKind::Keyword};
+    ret["or"] = {AutocompleteEntryKind::Keyword};
+    return {std::move(ret), std::move(ancestry), AutocompleteContext::Keyword};
 }
 
 static AutocompleteResult autocomplete(const SourceModule& sourceModule, const ModulePtr& module, NotNull<BuiltinTypes> builtinTypes,
@@ -1407,13 +1419,12 @@ static AutocompleteResult autocomplete(const SourceModule& sourceModule, const M
     {
         if (!statFor->hasDo || position < statFor->doLocation.begin)
         {
-            if (!statFor->from->is<AstExprError>() && !statFor->to->is<AstExprError>() && (!statFor->step || !statFor->step->is<AstExprError>()))
-                return {{{"do", AutocompleteEntry{AutocompleteEntryKind::Keyword}}}, ancestry, AutocompleteContext::Keyword};
-
             if (statFor->from->location.containsClosed(position) || statFor->to->location.containsClosed(position) ||
                 (statFor->step && statFor->step->location.containsClosed(position)))
                 return autocompleteExpression(sourceModule, *module, builtinTypes, typeArena, ancestry, position);
 
+            if (!statFor->from->is<AstExprError>() && !statFor->to->is<AstExprError>() && (!statFor->step || !statFor->step->is<AstExprError>()))
+                return {{{"do", AutocompleteEntry{AutocompleteEntryKind::Keyword}}}, ancestry, AutocompleteContext::Keyword};
             return {};
         }
 
@@ -1463,7 +1474,9 @@ static AutocompleteResult autocomplete(const SourceModule& sourceModule, const M
     else if (AstStatWhile* statWhile = parent->as<AstStatWhile>(); node->is<AstStatBlock>() && statWhile)
     {
         if (!statWhile->hasDo && !statWhile->condition->is<AstStatError>() && position > statWhile->condition->location.end)
-            return {{{"do", AutocompleteEntry{AutocompleteEntryKind::Keyword}}}, ancestry, AutocompleteContext::Keyword};
+        {
+            return autocompleteWhileLoopKeywords(ancestry);
+        }
 
         if (!statWhile->hasDo || position < statWhile->doLocation.begin)
             return autocompleteExpression(sourceModule, *module, builtinTypes, typeArena, ancestry, position);
@@ -1472,9 +1485,12 @@ static AutocompleteResult autocomplete(const SourceModule& sourceModule, const M
             return {autocompleteStatement(sourceModule, *module, ancestry, position), ancestry, AutocompleteContext::Statement};
     }
 
-    else if (AstStatWhile* statWhile = extractStat<AstStatWhile>(ancestry); statWhile && !statWhile->hasDo)
-        return {{{"do", AutocompleteEntry{AutocompleteEntryKind::Keyword}}}, ancestry, AutocompleteContext::Keyword};
-
+    else if (AstStatWhile* statWhile = extractStat<AstStatWhile>(ancestry);
+             (statWhile && (!statWhile->hasDo || statWhile->doLocation.containsClosed(position)) && statWhile->condition &&
+                 !statWhile->condition->location.containsClosed(position)))
+    {
+        return autocompleteWhileLoopKeywords(ancestry);
+    }
     else if (AstStatIf* statIf = node->as<AstStatIf>(); statIf && !statIf->elseLocation.has_value())
     {
         return {{{"else", AutocompleteEntry{AutocompleteEntryKind::Keyword}}, {"elseif", AutocompleteEntry{AutocompleteEntryKind::Keyword}}},
@@ -1487,22 +1503,15 @@ static AutocompleteResult autocomplete(const SourceModule& sourceModule, const M
         else if (!statIf->thenLocation || statIf->thenLocation->containsClosed(position))
             return {{{"then", AutocompleteEntry{AutocompleteEntryKind::Keyword}}}, ancestry, AutocompleteContext::Keyword};
     }
-    else if (AstStatIf* statIf = extractStat<AstStatIf>(ancestry);
-             statIf && (!statIf->thenLocation || statIf->thenLocation->containsClosed(position)) && 
-             (!FFlag::LuauFixAutocompleteInIf || (statIf->condition && !statIf->condition->location.containsClosed(position))))
+    else if (AstStatIf* statIf = extractStat<AstStatIf>(ancestry); statIf &&
+                                                                   (!statIf->thenLocation || statIf->thenLocation->containsClosed(position)) &&
+                                                                   (statIf->condition && !statIf->condition->location.containsClosed(position)))
     {
-        if (FFlag::LuauFixAutocompleteInIf)
-        {
-            AutocompleteEntryMap ret;
-            ret["then"] = {AutocompleteEntryKind::Keyword};
-            ret["and"] = {AutocompleteEntryKind::Keyword};
-            ret["or"] = {AutocompleteEntryKind::Keyword};
-            return {std::move(ret), ancestry, AutocompleteContext::Keyword};
-        }
-        else
-        {
-            return {{{"then", AutocompleteEntry{AutocompleteEntryKind::Keyword}}}, ancestry, AutocompleteContext::Keyword};
-        }
+        AutocompleteEntryMap ret;
+        ret["then"] = {AutocompleteEntryKind::Keyword};
+        ret["and"] = {AutocompleteEntryKind::Keyword};
+        ret["or"] = {AutocompleteEntryKind::Keyword};
+        return {std::move(ret), ancestry, AutocompleteContext::Keyword};
     }
     else if (AstStatRepeat* statRepeat = node->as<AstStatRepeat>(); statRepeat && statRepeat->condition->is<AstExprError>())
         return autocompleteExpression(sourceModule, *module, builtinTypes, typeArena, ancestry, position);
@@ -1520,23 +1529,20 @@ static AutocompleteResult autocomplete(const SourceModule& sourceModule, const M
                 {
                     auto result = autocompleteProps(*module, typeArena, builtinTypes, *it, PropIndexType::Key, ancestry);
 
-                    if (FFlag::LuauCompleteTableKeysBetter)
-                    {
-                        if (auto nodeIt = module->astExpectedTypes.find(node->asExpr()))
-                            autocompleteStringSingleton(*nodeIt, !node->is<AstExprConstantString>(), result);
+                    if (auto nodeIt = module->astExpectedTypes.find(node->asExpr()))
+                        autocompleteStringSingleton(*nodeIt, !node->is<AstExprConstantString>(), result);
 
-                        if (!key)
+                    if (!key)
+                    {
+                        // If there is "no key," it may be that the user
+                        // intends for the current token to be the key, but
+                        // has yet to type the `=` sign.
+                        //
+                        // If the key type is a union of singleton strings,
+                        // suggest those too.
+                        if (auto ttv = get<TableType>(follow(*it)); ttv && ttv->indexer)
                         {
-                            // If there is "no key," it may be that the user
-                            // intends for the current token to be the key, but
-                            // has yet to type the `=` sign.
-                            //
-                            // If the key type is a union of singleton strings,
-                            // suggest those too.
-                            if (auto ttv = get<TableType>(follow(*it)); ttv && ttv->indexer)
-                            {
-                                autocompleteStringSingleton(ttv->indexer->indexType, false, result);
-                            }
+                            autocompleteStringSingleton(ttv->indexer->indexType, false, result);
                         }
                     }
 
@@ -1626,12 +1632,11 @@ AutocompleteResult autocomplete(Frontend& frontend, const ModuleName& moduleName
         return {};
 
     ModulePtr module = frontend.moduleResolverForAutocomplete.getModule(moduleName);
-
     if (!module)
         return {};
 
     NotNull<BuiltinTypes> builtinTypes = frontend.builtinTypes;
-    Scope* globalScope = frontend.typeCheckerForAutocomplete.globalScope.get();
+    Scope* globalScope = frontend.globalsForAutocomplete.globalScope.get();
 
     TypeArena typeArena;
     return autocomplete(*sourceModule, module, builtinTypes, &typeArena, globalScope, position, callback);

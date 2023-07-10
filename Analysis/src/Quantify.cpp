@@ -10,7 +10,6 @@
 
 LUAU_FASTFLAG(DebugLuauSharedSelf)
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
-LUAU_FASTFLAG(LuauClassTypeVarsInSubstitution)
 
 namespace Luau
 {
@@ -27,7 +26,6 @@ struct Quantifier final : TypeOnceVisitor
     explicit Quantifier(TypeLevel level)
         : level(level)
     {
-        LUAU_ASSERT(!FFlag::DebugLuauDeferredConstraintResolution);
     }
 
     /// @return true if outer encloses inner
@@ -117,7 +115,7 @@ void quantify(TypeId ty, TypeLevel level)
 
             for (const auto& [_, prop] : ttv->props)
             {
-                auto ftv = getMutable<FunctionType>(follow(prop.type));
+                auto ftv = getMutable<FunctionType>(follow(prop.type()));
                 if (!ftv || !ftv->hasSelf)
                     continue;
 
@@ -137,7 +135,7 @@ void quantify(TypeId ty, TypeLevel level)
             ftv->genericPacks.insert(ftv->genericPacks.end(), q.genericPacks.begin(), q.genericPacks.end());
 
             if (ftv->generics.empty() && ftv->genericPacks.empty() && !q.seenMutableType && !q.seenGenericType)
-                ftv->hasNoGenerics = true;
+                ftv->hasNoFreeOrGenericTypes = true;
         }
     }
     else
@@ -155,8 +153,10 @@ void quantify(TypeId ty, TypeLevel level)
 struct PureQuantifier : Substitution
 {
     Scope* scope;
-    std::vector<TypeId> insertedGenerics;
-    std::vector<TypePackId> insertedGenericPacks;
+    OrderedMap<TypeId, TypeId> insertedGenerics;
+    OrderedMap<TypePackId, TypePackId> insertedGenericPacks;
+    bool seenMutableType = false;
+    bool seenGenericType = false;
 
     PureQuantifier(TypeArena* arena, Scope* scope)
         : Substitution(TxnLog::empty(), arena)
@@ -170,11 +170,18 @@ struct PureQuantifier : Substitution
 
         if (auto ftv = get<FreeType>(ty))
         {
-            return subsumes(scope, ftv->scope);
+            bool result = subsumes(scope, ftv->scope);
+            seenMutableType |= result;
+            return result;
         }
         else if (auto ttv = get<TableType>(ty))
         {
-            return ttv->state == TableState::Free && subsumes(scope, ttv->scope);
+            if (ttv->state == TableState::Free)
+                seenMutableType = true;
+            else if (ttv->state == TableState::Generic)
+                seenGenericType = true;
+
+            return (ttv->state == TableState::Unsealed || ttv->state == TableState::Free) && subsumes(scope, ttv->scope);
         }
 
         return false;
@@ -195,7 +202,7 @@ struct PureQuantifier : Substitution
         if (auto ftv = get<FreeType>(ty))
         {
             TypeId result = arena->addType(GenericType{scope});
-            insertedGenerics.push_back(result);
+            insertedGenerics.push(ty, result);
             return result;
         }
         else if (auto ttv = get<TableType>(ty))
@@ -207,7 +214,14 @@ struct PureQuantifier : Substitution
             *resultTable = *ttv;
             resultTable->level = TypeLevel{};
             resultTable->scope = scope;
-            resultTable->state = TableState::Generic;
+
+            if (ttv->state == TableState::Free)
+            {
+                resultTable->state = TableState::Generic;
+                insertedGenerics.push(ty, result);
+            }
+            else if (ttv->state == TableState::Unsealed)
+                resultTable->state = TableState::Sealed;
 
             return result;
         }
@@ -219,8 +233,8 @@ struct PureQuantifier : Substitution
     {
         if (auto ftp = get<FreeTypePack>(tp))
         {
-            TypePackId result = arena->addTypePack(TypePackVar{GenericTypePack{}});
-            insertedGenericPacks.push_back(result);
+            TypePackId result = arena->addTypePack(TypePackVar{GenericTypePack{scope}});
+            insertedGenericPacks.push(tp, result);
             return result;
         }
 
@@ -229,7 +243,7 @@ struct PureQuantifier : Substitution
 
     bool ignoreChildren(TypeId ty) override
     {
-        if (FFlag::LuauClassTypeVarsInSubstitution && get<ClassType>(ty))
+        if (get<ClassType>(ty))
             return true;
 
         return ty->persistent;
@@ -240,20 +254,30 @@ struct PureQuantifier : Substitution
     }
 };
 
-TypeId quantify(TypeArena* arena, TypeId ty, Scope* scope)
+std::optional<QuantifierResult> quantify(TypeArena* arena, TypeId ty, Scope* scope)
 {
     PureQuantifier quantifier{arena, scope};
     std::optional<TypeId> result = quantifier.substitute(ty);
-    LUAU_ASSERT(result);
+    if (!result)
+        return std::nullopt;
 
     FunctionType* ftv = getMutable<FunctionType>(*result);
     LUAU_ASSERT(ftv);
     ftv->scope = scope;
-    ftv->generics.insert(ftv->generics.end(), quantifier.insertedGenerics.begin(), quantifier.insertedGenerics.end());
-    ftv->genericPacks.insert(ftv->genericPacks.end(), quantifier.insertedGenericPacks.begin(), quantifier.insertedGenericPacks.end());
-    ftv->hasNoGenerics = ftv->generics.empty() && ftv->genericPacks.empty();
 
-    return *result;
+    for (auto k : quantifier.insertedGenerics.keys)
+    {
+        TypeId g = quantifier.insertedGenerics.pairings[k];
+        if (get<GenericType>(g))
+            ftv->generics.push_back(g);
+    }
+
+    for (auto k : quantifier.insertedGenericPacks.keys)
+        ftv->genericPacks.push_back(quantifier.insertedGenericPacks.pairings[k]);
+
+    ftv->hasNoFreeOrGenericTypes = ftv->generics.empty() && ftv->genericPacks.empty() && !quantifier.seenGenericType && !quantifier.seenMutableType;
+
+    return std::optional<QuantifierResult>({*result, std::move(quantifier.insertedGenerics), std::move(quantifier.insertedGenericPacks)});
 }
 
 } // namespace Luau

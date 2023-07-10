@@ -3,6 +3,7 @@
 #include "Luau/Module.h"
 #include "Luau/Scope.h"
 #include "Luau/RecursionCounter.h"
+#include "Luau/Parser.h"
 
 #include "Fixture.h"
 
@@ -42,14 +43,46 @@ TEST_CASE_FIXTURE(Fixture, "is_within_comment")
     CHECK(!isWithinComment(*sm, Position{7, 11}));
 }
 
+TEST_CASE_FIXTURE(Fixture, "is_within_comment_parse_result")
+{
+    std::string src = R"(
+        --!strict
+        local foo = {}
+        function foo:bar() end
+
+        --[[
+            foo:
+        ]] foo:bar()
+
+        --[[]]--[[]] -- Two distinct comments that have zero characters of space between them.
+    )";
+
+    Luau::Allocator alloc;
+    Luau::AstNameTable names{alloc};
+    Luau::ParseOptions parseOptions;
+    parseOptions.captureComments = true;
+    Luau::ParseResult parseResult = Luau::Parser::parse(src.data(), src.size(), names, alloc, parseOptions);
+
+    CHECK_EQ(5, parseResult.commentLocations.size());
+
+    CHECK(isWithinComment(parseResult, Position{1, 15}));
+    CHECK(isWithinComment(parseResult, Position{6, 16}));
+    CHECK(isWithinComment(parseResult, Position{9, 13}));
+    CHECK(isWithinComment(parseResult, Position{9, 14}));
+
+    CHECK(!isWithinComment(parseResult, Position{2, 15}));
+    CHECK(!isWithinComment(parseResult, Position{7, 10}));
+    CHECK(!isWithinComment(parseResult, Position{7, 11}));
+}
+
 TEST_CASE_FIXTURE(Fixture, "dont_clone_persistent_primitive")
 {
     TypeArena dest;
     CloneState cloneState;
 
     // numberType is persistent.  We leave it as-is.
-    TypeId newNumber = clone(typeChecker.numberType, dest, cloneState);
-    CHECK_EQ(newNumber, typeChecker.numberType);
+    TypeId newNumber = clone(builtinTypes->numberType, dest, cloneState);
+    CHECK_EQ(newNumber, builtinTypes->numberType);
 }
 
 TEST_CASE_FIXTURE(Fixture, "deepClone_non_persistent_primitive")
@@ -58,9 +91,9 @@ TEST_CASE_FIXTURE(Fixture, "deepClone_non_persistent_primitive")
     CloneState cloneState;
 
     // Create a new number type that isn't persistent
-    unfreeze(typeChecker.globalTypes);
-    TypeId oldNumber = typeChecker.globalTypes.addType(PrimitiveType{PrimitiveType::Number});
-    freeze(typeChecker.globalTypes);
+    unfreeze(frontend.globals.globalTypes);
+    TypeId oldNumber = frontend.globals.globalTypes.addType(PrimitiveType{PrimitiveType::Number});
+    freeze(frontend.globals.globalTypes);
     TypeId newNumber = clone(oldNumber, dest, cloneState);
 
     CHECK_NE(newNumber, oldNumber);
@@ -71,6 +104,14 @@ TEST_CASE_FIXTURE(Fixture, "deepClone_non_persistent_primitive")
 
 TEST_CASE_FIXTURE(Fixture, "deepClone_cyclic_table")
 {
+    // Under DCR, we don't seal the outer occurrance of the table `Cyclic` which
+    // breaks this test.  I'm not sure if that behaviour change is important or
+    // not, but it's tangental to the core purpose of this test.
+
+    ScopedFastFlag sff[] = {
+        {"DebugLuauDeferredConstraintResolution", false},
+    };
+
     CheckResult result = check(R"(
         local Cyclic = {}
         function Cyclic.get()
@@ -85,18 +126,18 @@ TEST_CASE_FIXTURE(Fixture, "deepClone_cyclic_table")
      * Assert that the return type of get() is the same as the outer table.
      */
 
-    TypeId counterType = requireType("Cyclic");
+    TypeId ty = requireType("Cyclic");
 
     TypeArena dest;
     CloneState cloneState;
-    TypeId counterCopy = clone(counterType, dest, cloneState);
+    TypeId cloneTy = clone(ty, dest, cloneState);
 
-    TableType* ttv = getMutable<TableType>(counterCopy);
+    TableType* ttv = getMutable<TableType>(cloneTy);
     REQUIRE(ttv != nullptr);
 
     CHECK_EQ(std::optional<std::string>{"Cyclic"}, ttv->syntheticName);
 
-    TypeId methodType = ttv->props["get"].type;
+    TypeId methodType = ttv->props["get"].type();
     REQUIRE(methodType != nullptr);
 
     const FunctionType* ftv = get<FunctionType>(methodType);
@@ -105,15 +146,44 @@ TEST_CASE_FIXTURE(Fixture, "deepClone_cyclic_table")
     std::optional<TypeId> methodReturnType = first(ftv->retTypes);
     REQUIRE(methodReturnType);
 
-    CHECK_EQ(methodReturnType, counterCopy);
+    CHECK_MESSAGE(methodReturnType == cloneTy, toString(methodType, {true}) << " should be pointer identical to " << toString(cloneTy, {true}));
     CHECK_EQ(2, dest.typePacks.size()); // one for the function args, and another for its return type
     CHECK_EQ(2, dest.types.size());     // One table and one function
 }
 
+TEST_CASE_FIXTURE(Fixture, "deepClone_cyclic_table_2")
+{
+    TypeArena src;
+
+    TypeId tableTy = src.addType(TableType{});
+    TableType* tt = getMutable<TableType>(tableTy);
+    REQUIRE(tt);
+
+    TypeId methodTy = src.addType(FunctionType{src.addTypePack({}), src.addTypePack({tableTy})});
+
+    tt->props["get"].setType(methodTy);
+
+    TypeArena dest;
+
+    CloneState cloneState;
+    TypeId cloneTy = clone(tableTy, dest, cloneState);
+    TableType* ctt = getMutable<TableType>(cloneTy);
+    REQUIRE(ctt);
+
+    TypeId clonedMethodType = ctt->props["get"].type();
+    REQUIRE(clonedMethodType);
+
+    const FunctionType* cmf = get<FunctionType>(clonedMethodType);
+    REQUIRE(cmf);
+
+    std::optional<TypeId> cloneMethodReturnType = first(cmf->retTypes);
+    REQUIRE(bool(cloneMethodReturnType));
+
+    CHECK(*cloneMethodReturnType == cloneTy);
+}
+
 TEST_CASE_FIXTURE(BuiltinsFixture, "builtin_types_point_into_globalTypes_arena")
 {
-    ScopedFastFlag luauScopelessModule{"LuauScopelessModule", true};
-
     CheckResult result = check(R"(
         return {sign=math.sign}
     )");
@@ -129,14 +199,11 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "builtin_types_point_into_globalTypes_arena")
     TableType* exportsTable = getMutable<TableType>(*exports);
     REQUIRE(exportsTable != nullptr);
 
-    TypeId signType = exportsTable->props["sign"].type;
+    TypeId signType = exportsTable->props["sign"].type();
     REQUIRE(signType != nullptr);
 
     CHECK(!isInArena(signType, module->interfaceTypes));
-    if (FFlag::DebugLuauDeferredConstraintResolution)
-        CHECK(isInArena(signType, frontend.globalTypes));
-    else
-        CHECK(isInArena(signType, typeChecker.globalTypes));
+    CHECK(isInArena(signType, frontend.globals.globalTypes));
 }
 
 TEST_CASE_FIXTURE(Fixture, "deepClone_union")
@@ -144,9 +211,9 @@ TEST_CASE_FIXTURE(Fixture, "deepClone_union")
     TypeArena dest;
     CloneState cloneState;
 
-    unfreeze(typeChecker.globalTypes);
-    TypeId oldUnion = typeChecker.globalTypes.addType(UnionType{{typeChecker.numberType, typeChecker.stringType}});
-    freeze(typeChecker.globalTypes);
+    unfreeze(frontend.globals.globalTypes);
+    TypeId oldUnion = frontend.globals.globalTypes.addType(UnionType{{builtinTypes->numberType, builtinTypes->stringType}});
+    freeze(frontend.globals.globalTypes);
     TypeId newUnion = clone(oldUnion, dest, cloneState);
 
     CHECK_NE(newUnion, oldUnion);
@@ -159,9 +226,9 @@ TEST_CASE_FIXTURE(Fixture, "deepClone_intersection")
     TypeArena dest;
     CloneState cloneState;
 
-    unfreeze(typeChecker.globalTypes);
-    TypeId oldIntersection = typeChecker.globalTypes.addType(IntersectionType{{typeChecker.numberType, typeChecker.stringType}});
-    freeze(typeChecker.globalTypes);
+    unfreeze(frontend.globals.globalTypes);
+    TypeId oldIntersection = frontend.globals.globalTypes.addType(IntersectionType{{builtinTypes->numberType, builtinTypes->stringType}});
+    freeze(frontend.globals.globalTypes);
     TypeId newIntersection = clone(oldIntersection, dest, cloneState);
 
     CHECK_NE(newIntersection, oldIntersection);
@@ -173,13 +240,13 @@ TEST_CASE_FIXTURE(Fixture, "clone_class")
 {
     Type exampleMetaClass{ClassType{"ExampleClassMeta",
         {
-            {"__add", {typeChecker.anyType}},
+            {"__add", {builtinTypes->anyType}},
         },
         std::nullopt, std::nullopt, {}, {}, "Test"}};
     Type exampleClass{ClassType{"ExampleClass",
         {
-            {"PropOne", {typeChecker.numberType}},
-            {"PropTwo", {typeChecker.stringType}},
+            {"PropOne", {builtinTypes->numberType}},
+            {"PropTwo", {builtinTypes->stringType}},
         },
         std::nullopt, &exampleMetaClass, {}, {}, "Test"}};
 
@@ -273,8 +340,8 @@ TEST_CASE_FIXTURE(Fixture, "clone_recursion_limit")
     {
         TableType* ttv = getMutable<TableType>(nested);
 
-        ttv->props["a"].type = src.addType(TableType{});
-        nested = ttv->props["a"].type;
+        ttv->props["a"].setType(src.addType(TableType{}));
+        nested = ttv->props["a"].type();
     }
 
     TypeArena dest;
@@ -283,9 +350,40 @@ TEST_CASE_FIXTURE(Fixture, "clone_recursion_limit")
     CHECK_THROWS_AS(clone(table, dest, cloneState), RecursionLimitException);
 }
 
+// Unions should never be cyclic, but we should clone them correctly even if
+// they are.
+TEST_CASE_FIXTURE(Fixture, "clone_cyclic_union")
+{
+    ScopedFastFlag sff{"LuauCloneCyclicUnions", true};
+
+    TypeArena src;
+
+    TypeId u = src.addType(UnionType{{builtinTypes->numberType, builtinTypes->stringType}});
+    UnionType* uu = getMutable<UnionType>(u);
+    REQUIRE(uu);
+
+    uu->options.push_back(u);
+
+    TypeArena dest;
+    CloneState cloneState;
+
+    TypeId cloned = clone(u, dest, cloneState);
+    REQUIRE(cloned);
+
+    const UnionType* clonedUnion = get<UnionType>(cloned);
+    REQUIRE(clonedUnion);
+    REQUIRE(3 == clonedUnion->options.size());
+
+    CHECK(builtinTypes->numberType == clonedUnion->options[0]);
+    CHECK(builtinTypes->stringType == clonedUnion->options[1]);
+    CHECK(cloned == clonedUnion->options[2]);
+}
+
 TEST_CASE_FIXTURE(Fixture, "any_persistance_does_not_leak")
 {
-    ScopedFastFlag luauScopelessModule{"LuauScopelessModule", true};
+    ScopedFastFlag flags[] = {
+        {"LuauOccursIsntAlwaysFailure", true},
+    };
 
     fileResolver.source["Module/A"] = R"(
 export type A = B
@@ -300,17 +398,17 @@ type B = A
     auto mod = frontend.moduleResolver.getModule("Module/A");
     auto it = mod->exportedTypeBindings.find("A");
     REQUIRE(it != mod->exportedTypeBindings.end());
-    CHECK(toString(it->second.type) == "any");
+
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK(toString(it->second.type) == "any");
+    else
+        CHECK(toString(it->second.type) == "*error-type*");
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "do_not_clone_reexports")
 {
     ScopedFastFlag flags[] = {
-        {"LuauClonePublicInterfaceLess", true},
-        {"LuauSubstitutionReentrant", true},
-        {"LuauClassTypeVarsInSubstitution", true},
-        {"LuauSubstitutionFixMissingFields", true},
-        {"LuauScopelessModule", true},
+        {"LuauClonePublicInterfaceLess2", true},
     };
 
     fileResolver.source["Module/A"] = R"(
@@ -339,17 +437,13 @@ return {}
     TypeId typeB = modBiter->second.type;
     TableType* tableB = getMutable<TableType>(typeB);
     REQUIRE(tableB);
-    CHECK(typeA == tableB->props["q"].type);
+    CHECK(typeA == tableB->props["q"].type());
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "do_not_clone_types_of_reexported_values")
 {
     ScopedFastFlag flags[] = {
-        {"LuauClonePublicInterfaceLess", true},
-        {"LuauSubstitutionReentrant", true},
-        {"LuauClassTypeVarsInSubstitution", true},
-        {"LuauSubstitutionFixMissingFields", true},
-        {"LuauScopelessModule", true},
+        {"LuauClonePublicInterfaceLess2", true},
     };
 
     fileResolver.source["Module/A"] = R"(
@@ -376,7 +470,7 @@ return exports
     REQUIRE(typeB);
     TableType* tableA = getMutable<TableType>(*typeA);
     TableType* tableB = getMutable<TableType>(*typeB);
-    CHECK(tableA->props["a"].type == tableB->props["b"].type);
+    CHECK(tableA->props["a"].type() == tableB->props["b"].type());
 }
 
 TEST_SUITE_END();

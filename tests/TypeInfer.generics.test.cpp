@@ -10,7 +10,6 @@
 #include "doctest.h"
 
 LUAU_FASTFLAG(LuauInstantiateInSubtyping)
-LUAU_FASTFLAG(LuauTypeMismatchInvarianceInError)
 
 using namespace Luau;
 
@@ -282,8 +281,14 @@ TEST_CASE_FIXTURE(Fixture, "infer_generic_methods")
         function x:f(): string return self:id("hello") end
         function x:g(): number return self:id(37) end
     )");
-    // TODO: Quantification should be doing the conversion, not normalization.
-    LUAU_REQUIRE_ERRORS(result);
+
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        LUAU_REQUIRE_NO_ERRORS(result);
+    else
+    {
+        // TODO: Quantification should be doing the conversion, not normalization.
+        LUAU_REQUIRE_ERRORS(result);
+    }
 }
 
 TEST_CASE_FIXTURE(Fixture, "calling_self_generic_methods")
@@ -296,7 +301,8 @@ TEST_CASE_FIXTURE(Fixture, "calling_self_generic_methods")
             local y: number = self:id(37)
         end
     )");
-    // TODO: Should typecheck but currently errors CLI-39916
+
+    // TODO: Should typecheck but currently errors CLI-54277
     LUAU_REQUIRE_ERRORS(result);
 }
 
@@ -718,24 +724,12 @@ y.a.c = y
     )");
 
     LUAU_REQUIRE_ERRORS(result);
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-    {
-        CHECK_EQ(toString(result.errors[0]),
-            R"(Type 'y' could not be converted into 'T<string>'
+    CHECK_EQ(toString(result.errors[0]),
+        R"(Type 'y' could not be converted into 'T<string>'
 caused by:
   Property 'a' is not compatible. Type '{ c: T<string>?, d: number }' could not be converted into 'U<string>'
 caused by:
   Property 'd' is not compatible. Type 'number' could not be converted into 'string' in an invariant context)");
-    }
-    else
-    {
-        CHECK_EQ(toString(result.errors[0]),
-            R"(Type 'y' could not be converted into 'T<string>'
-caused by:
-  Property 'a' is not compatible. Type '{ c: T<string>?, d: number }' could not be converted into 'U<string>'
-caused by:
-  Property 'd' is not compatible. Type 'number' could not be converted into 'string')");
-    }
 }
 
 TEST_CASE_FIXTURE(Fixture, "generic_type_pack_unification1")
@@ -837,8 +831,8 @@ TEST_CASE_FIXTURE(Fixture, "generic_function")
     LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK_EQ("<a>(a) -> a", toString(requireType("id")));
-    CHECK_EQ(*typeChecker.numberType, *requireType("a"));
-    CHECK_EQ(*typeChecker.nilType, *requireType("b"));
+    CHECK_EQ(*builtinTypes->numberType, *requireType("a"));
+    CHECK_EQ(*builtinTypes->nilType, *requireType("b"));
 }
 
 TEST_CASE_FIXTURE(Fixture, "generic_table_method")
@@ -858,7 +852,7 @@ TEST_CASE_FIXTURE(Fixture, "generic_table_method")
     REQUIRE(tTable != nullptr);
 
     REQUIRE(tTable->props.count("bar"));
-    TypeId barType = tTable->props["bar"].type;
+    TypeId barType = tTable->props["bar"].type();
     REQUIRE(barType != nullptr);
 
     const FunctionType* ftv = get<FunctionType>(follow(barType));
@@ -867,7 +861,7 @@ TEST_CASE_FIXTURE(Fixture, "generic_table_method")
     std::vector<TypeId> args = flatten(ftv->argTypes).first;
     TypeId argType = args.at(1);
 
-    CHECK_MESSAGE(get<Unifiable::Generic>(argType), "Should be generic: " << *barType);
+    CHECK_MESSAGE(get<GenericType>(argType), "Should be generic: " << *barType);
 }
 
 TEST_CASE_FIXTURE(Fixture, "correctly_instantiate_polymorphic_member_functions")
@@ -893,7 +887,7 @@ TEST_CASE_FIXTURE(Fixture, "correctly_instantiate_polymorphic_member_functions")
     std::optional<Property> fooProp = get(t->props, "foo");
     REQUIRE(bool(fooProp));
 
-    const FunctionType* foo = get<FunctionType>(follow(fooProp->type));
+    const FunctionType* foo = get<FunctionType>(follow(fooProp->type()));
     REQUIRE(bool(foo));
 
     std::optional<TypeId> ret_ = first(foo->retTypes);
@@ -940,7 +934,7 @@ TEST_CASE_FIXTURE(Fixture, "instantiate_cyclic_generic_function")
     std::optional<Property> methodProp = get(argTable->props, "method");
     REQUIRE(bool(methodProp));
 
-    const FunctionType* methodFunction = get<FunctionType>(methodProp->type);
+    const FunctionType* methodFunction = get<FunctionType>(methodProp->type());
     REQUIRE(methodFunction != nullptr);
 
     std::optional<TypeId> methodArg = first(methodFunction->argTypes);
@@ -1041,8 +1035,11 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "infer_generic_function_function_argument")
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
+}
 
-    result = check(R"(
+TEST_CASE_FIXTURE(BuiltinsFixture, "infer_generic_function_function_argument_2")
+{
+    CheckResult result = check(R"(
         local function map<a, b>(arr: {a}, f: (a) -> b)
             local r = {}
             for i,v in ipairs(arr) do
@@ -1056,8 +1053,11 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "infer_generic_function_function_argument")
 
     LUAU_REQUIRE_NO_ERRORS(result);
     REQUIRE_EQ("{boolean}", toString(requireType("r")));
+}
 
-    check(R"(
+TEST_CASE_FIXTURE(BuiltinsFixture, "infer_generic_function_function_argument_3")
+{
+    CheckResult result = check(R"(
         local function foldl<a, b>(arr: {a}, init: b, f: (b, a) -> b)
             local r = init
             for i,v in ipairs(arr) do
@@ -1202,10 +1202,6 @@ TEST_CASE_FIXTURE(Fixture, "quantify_functions_even_if_they_have_an_explicit_gen
 
 TEST_CASE_FIXTURE(Fixture, "do_not_always_instantiate_generic_intersection_types")
 {
-    ScopedFastFlag sff[] = {
-        {"LuauMaybeGenericIntersectionTypes", true},
-    };
-
     CheckResult result = check(R"(
         --!strict
         type Array<T> = { [number]: T }

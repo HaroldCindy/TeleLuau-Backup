@@ -1,6 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #pragma once
 
+#include "Luau/Def.h"
 #include "Luau/Location.h"
 #include "Luau/NotNull.h"
 #include "Luau/Type.h"
@@ -43,6 +44,8 @@ struct Scope
     std::unordered_map<Name, TypeFun> exportedTypeBindings;
     std::unordered_map<Name, TypeFun> privateTypeBindings;
     std::unordered_map<Name, Location> typeAliasLocations;
+    std::unordered_map<Name, Location> typeAliasNameLocations;
+    std::unordered_map<Name, ModuleName> importedModules; // Mapping from the name in the require statement to the internal moduleName.
     std::unordered_map<Name, std::unordered_map<Name, TypeFun>> importedTypeBindings;
 
     DenseHashSet<Name> builtinTypeNames{""};
@@ -50,19 +53,20 @@ struct Scope
 
     std::optional<TypeId> lookup(Symbol sym) const;
     std::optional<TypeId> lookup(DefId def) const;
-    std::optional<std::pair<TypeId, Scope*>> lookupEx(Symbol sym);
+    std::optional<std::pair<Binding*, Scope*>> lookupEx(Symbol sym);
 
-    std::optional<TypeFun> lookupType(const Name& name);
-    std::optional<TypeFun> lookupImportedType(const Name& moduleAlias, const Name& name);
+    std::optional<TypeFun> lookupType(const Name& name) const;
+    std::optional<TypeFun> lookupImportedType(const Name& moduleAlias, const Name& name) const;
 
     std::unordered_map<Name, TypePackId> privateTypePackBindings;
-    std::optional<TypePackId> lookupPack(const Name& name);
+    std::optional<TypePackId> lookupPack(const Name& name) const;
 
     // WARNING: This function linearly scans for a string key of equal value!  It is thus O(n**2)
     std::optional<Binding> linearSearchForBinding(const std::string& name, bool traverseScopeChain = true) const;
 
     RefinementMap refinements;
     DenseHashMap<const Def*, TypeId> dcrRefinements{nullptr};
+    void inheritRefinements(const ScopePtr& childScope);
 
     // For mutually recursive type aliases, it's important that
     // they use the same types for the same names.

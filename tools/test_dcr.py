@@ -107,6 +107,12 @@ def main():
         action="store_true",
         help="Write a new faillist.txt after running tests.",
     )
+    parser.add_argument(
+        "--rwp",
+        dest="rwp",
+        action="store_true",
+        help="Run the tests with read-write properties enabled.",
+    )
 
     parser.add_argument("--randomize", action="store_true", help="Pick a random seed")
 
@@ -120,13 +126,19 @@ def main():
 
     args = parser.parse_args()
 
+    if args.write and args.rwp:
+        print_stderr(
+            "Cannot run test_dcr.py with --write *and* --rwp. You don't want to commit local type inference faillist.txt yet."
+        )
+        sys.exit(1)
+
     failList = loadFailList()
 
-    commandLine = [
-        args.path,
-        "--reporters=xml",
-        "--fflags=true,DebugLuauDeferredConstraintResolution=true",
-    ]
+    flags = ["true", "DebugLuauDeferredConstraintResolution"]
+    if args.rwp:
+        flags.append("DebugLuauReadWriteProperties")
+
+    commandLine = [args.path, "--reporters=xml", "--fflags=" + ",".join(flags)]
 
     if args.random_seed:
         commandLine.append("--random-seed=" + str(args.random_seed))

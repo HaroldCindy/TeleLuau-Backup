@@ -10,7 +10,6 @@
 #include <stdexcept>
 #include <type_traits>
 
-LUAU_FASTFLAGVARIABLE(LuauTypeMismatchInvarianceInError, false)
 
 static std::string wrongNumberOfArgsString(
     size_t expectedCount, std::optional<size_t> maximumCount, size_t actualCount, const char* argPrefix = nullptr, bool isVariadic = false)
@@ -106,7 +105,7 @@ struct ErrorConverter
         {
             result += "; " + tm.reason;
         }
-        else if (FFlag::LuauTypeMismatchInvarianceInError && tm.context == TypeMismatch::InvariantContext)
+        else if (tm.context == TypeMismatch::InvariantContext)
         {
             result += " in an invariant context";
         }
@@ -349,7 +348,10 @@ struct ErrorConverter
             else
                 s += " -> ";
 
-            s += name;
+            if (fileResolver != nullptr)
+                s += fileResolver->getHumanReadableModuleName(name);
+            else
+                s += name;
         }
 
         return s;
@@ -479,6 +481,26 @@ struct ErrorConverter
     std::string operator()(const DynamicPropertyLookupOnClassesUnsafe& e) const
     {
         return "Attempting a dynamic property access on type '" + Luau::toString(e.ty) + "' is unsafe and may cause exceptions at runtime";
+    }
+
+    std::string operator()(const UninhabitedTypeFamily& e) const
+    {
+        return "Type family instance " + Luau::toString(e.ty) + " is uninhabited";
+    }
+
+    std::string operator()(const UninhabitedTypePackFamily& e) const
+    {
+        return "Type pack family instance " + Luau::toString(e.tp) + " is uninhabited";
+    }
+
+    std::string operator()(const WhereClauseNeeded& e) const
+    {
+        return "Type family instance " + Luau::toString(e.ty) + " depends on generic function parameters but does not appear in the function signature; this construct cannot be type-checked at this time";
+    }
+
+    std::string operator()(const PackWhereClauseNeeded& e) const
+    {
+        return "Type pack family instance " + Luau::toString(e.tp) + " depends on generic function parameters but does not appear in the function signature; this construct cannot be type-checked at this time";
     }
 };
 
@@ -782,6 +804,26 @@ bool DynamicPropertyLookupOnClassesUnsafe::operator==(const DynamicPropertyLooku
     return ty == rhs.ty;
 }
 
+bool UninhabitedTypeFamily::operator==(const UninhabitedTypeFamily& rhs) const
+{
+    return ty == rhs.ty;
+}
+
+bool UninhabitedTypePackFamily::operator==(const UninhabitedTypePackFamily& rhs) const
+{
+    return tp == rhs.tp;
+}
+
+bool WhereClauseNeeded::operator==(const WhereClauseNeeded& rhs) const
+{
+    return ty == rhs.ty;
+}
+
+bool PackWhereClauseNeeded::operator==(const PackWhereClauseNeeded& rhs) const
+{
+    return tp == rhs.tp;
+}
+
 std::string toString(const TypeError& error)
 {
     return toString(error, TypeErrorToStringOptions{});
@@ -940,6 +982,14 @@ void copyError(T& e, TypeArena& destArena, CloneState cloneState)
     }
     else if constexpr (std::is_same_v<T, DynamicPropertyLookupOnClassesUnsafe>)
         e.ty = clone(e.ty);
+    else if constexpr (std::is_same_v<T, UninhabitedTypeFamily>)
+        e.ty = clone(e.ty);
+    else if constexpr (std::is_same_v<T, UninhabitedTypePackFamily>)
+        e.tp = clone(e.tp);
+    else if constexpr (std::is_same_v<T, WhereClauseNeeded>)
+        e.ty = clone(e.ty);
+    else if constexpr (std::is_same_v<T, PackWhereClauseNeeded>)
+        e.tp = clone(e.tp);
     else
         static_assert(always_false_v<T>, "Non-exhaustive type switch");
 }
@@ -959,7 +1009,7 @@ void copyErrors(ErrorVec& errors, TypeArena& destArena)
         visit(visitErrorData, error.data);
 }
 
-void InternalErrorReporter::ice(const std::string& message, const Location& location)
+void InternalErrorReporter::ice(const std::string& message, const Location& location) const
 {
     InternalCompilerError error(message, moduleName, location);
 
@@ -969,7 +1019,7 @@ void InternalErrorReporter::ice(const std::string& message, const Location& loca
     throw error;
 }
 
-void InternalErrorReporter::ice(const std::string& message)
+void InternalErrorReporter::ice(const std::string& message) const
 {
     InternalCompilerError error(message, moduleName);
 

@@ -9,11 +9,13 @@
 
 using namespace Luau;
 
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
+
 struct ToDotClassFixture : Fixture
 {
     ToDotClassFixture()
     {
-        TypeArena& arena = typeChecker.globalTypes;
+        TypeArena& arena = frontend.globals.globalTypes;
 
         unfreeze(arena);
 
@@ -21,17 +23,17 @@ struct ToDotClassFixture : Fixture
 
         TypeId baseClassInstanceType = arena.addType(ClassType{"BaseClass", {}, std::nullopt, baseClassMetaType, {}, {}, "Test"});
         getMutable<ClassType>(baseClassInstanceType)->props = {
-            {"BaseField", {typeChecker.numberType}},
+            {"BaseField", {builtinTypes->numberType}},
         };
-        typeChecker.globalScope->exportedTypeBindings["BaseClass"] = TypeFun{{}, baseClassInstanceType};
+        frontend.globals.globalScope->exportedTypeBindings["BaseClass"] = TypeFun{{}, baseClassInstanceType};
 
         TypeId childClassInstanceType = arena.addType(ClassType{"ChildClass", {}, baseClassInstanceType, std::nullopt, {}, {}, "Test"});
         getMutable<ClassType>(childClassInstanceType)->props = {
-            {"ChildField", {typeChecker.stringType}},
+            {"ChildField", {builtinTypes->stringType}},
         };
-        typeChecker.globalScope->exportedTypeBindings["ChildClass"] = TypeFun{{}, childClassInstanceType};
+        frontend.globals.globalScope->exportedTypeBindings["ChildClass"] = TypeFun{{}, childClassInstanceType};
 
-        for (const auto& [name, ty] : typeChecker.globalScope->exportedTypeBindings)
+        for (const auto& [name, ty] : frontend.globals.globalScope->exportedTypeBindings)
             persist(ty.type);
 
         freeze(arena);
@@ -78,14 +80,9 @@ n1 [label="AnyType 1"];
 
 TEST_CASE_FIXTURE(Fixture, "bound")
 {
-    CheckResult result = check(R"(
-function a(): number return 444 end
-local b = a()
-)");
-    LUAU_REQUIRE_NO_ERRORS(result);
+    TypeArena arena;
 
-    std::optional<TypeId> ty = getType("b");
-    REQUIRE(bool(ty));
+    TypeId ty = arena.addType(BoundType{builtinTypes->numberType});
 
     ToDotOptions opts;
     opts.showPointers = false;
@@ -94,7 +91,7 @@ n1 [label="BoundType 1"];
 n1 -> n2;
 n2 [label="number"];
 })",
-        toDot(*ty, opts));
+        toDot(ty, opts));
 }
 
 TEST_CASE_FIXTURE(Fixture, "function")
@@ -109,7 +106,27 @@ local function f(a, ...: string) return a end
     ToDotOptions opts;
     opts.showPointers = false;
 
-    CHECK_EQ(R"(digraph graphname {
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        CHECK_EQ(R"(digraph graphname {
+n1 [label="FunctionType 1"];
+n1 -> n2 [label="arg"];
+n2 [label="TypePack 2"];
+n2 -> n3;
+n3 [label="GenericType 3"];
+n2 -> n4 [label="tail"];
+n4 [label="VariadicTypePack 4"];
+n4 -> n5;
+n5 [label="string"];
+n1 -> n6 [label="ret"];
+n6 [label="TypePack 6"];
+n6 -> n3;
+})",
+            toDot(requireType("f"), opts));
+    }
+    else
+    {
+        CHECK_EQ(R"(digraph graphname {
 n1 [label="FunctionType 1"];
 n1 -> n2 [label="arg"];
 n2 [label="TypePack 2"];
@@ -125,7 +142,8 @@ n6 -> n7;
 n7 [label="TypePack 7"];
 n7 -> n3;
 })",
-        toDot(requireType("f"), opts));
+            toDot(requireType("f"), opts));
+    }
 }
 
 TEST_CASE_FIXTURE(Fixture, "union")
@@ -149,10 +167,9 @@ n3 [label="number"];
 
 TEST_CASE_FIXTURE(Fixture, "intersection")
 {
-    CheckResult result = check(R"(
-local a: string & number -- uninhabited
-)");
-    LUAU_REQUIRE_NO_ERRORS(result);
+    TypeArena arena;
+
+    TypeId ty = arena.addType(IntersectionType{{builtinTypes->stringType, builtinTypes->numberType}});
 
     ToDotOptions opts;
     opts.showPointers = false;
@@ -163,7 +180,7 @@ n2 [label="string"];
 n1 -> n3;
 n3 [label="number"];
 })",
-        toDot(requireType("a"), opts));
+        toDot(ty, opts));
 }
 
 TEST_CASE_FIXTURE(Fixture, "table")
@@ -176,7 +193,35 @@ local a: A<number, ...string>
 
     ToDotOptions opts;
     opts.showPointers = false;
-    CHECK_EQ(R"(digraph graphname {
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        CHECK_EQ(R"(digraph graphname {
+n1 [label="TableType A"];
+n1 -> n2 [label="x"];
+n2 [label="number"];
+n1 -> n3 [label="y"];
+n3 [label="FunctionType 3"];
+n3 -> n4 [label="arg"];
+n4 [label="TypePack 4"];
+n4 -> n5 [label="tail"];
+n5 [label="VariadicTypePack 5"];
+n5 -> n6;
+n6 [label="string"];
+n3 -> n7 [label="ret"];
+n7 [label="TypePack 7"];
+n1 -> n8 [label="[index]"];
+n8 [label="string"];
+n1 -> n9 [label="[value]"];
+n9 [label="any"];
+n1 -> n10 [label="typeParam"];
+n10 [label="number"];
+n1 -> n5 [label="typePackParam"];
+})",
+            toDot(requireType("a"), opts));
+    }
+    else
+    {
+        CHECK_EQ(R"(digraph graphname {
 n1 [label="TableType A"];
 n1 -> n2 [label="x"];
 n2 [label="number"];
@@ -196,7 +241,8 @@ n1 -> n9 [label="typeParam"];
 n9 [label="number"];
 n1 -> n4 [label="typePackParam"];
 })",
-        toDot(requireType("a"), opts));
+            toDot(requireType("a"), opts));
+    }
 
     // Extra coverage with pointers (unstable values)
     (void)toDot(requireType("a"));
@@ -327,7 +373,7 @@ n1 [label="GenericTypePack T"];
 
 TEST_CASE_FIXTURE(Fixture, "bound_pack")
 {
-    TypePackVar pack{TypePackVariant{TypePack{{typeChecker.numberType}, {}}}};
+    TypePackVar pack{TypePackVariant{TypePack{{builtinTypes->numberType}, {}}}};
     TypePackVar bound{TypePackVariant{BoundTypePack{&pack}}};
 
     ToDotOptions opts;
@@ -344,27 +390,25 @@ n3 [label="number"];
 
 TEST_CASE_FIXTURE(Fixture, "bound_table")
 {
-    CheckResult result = check(R"(
-local a = {x=2}
-local b
-b.x = 2
-b = a
-)");
-    LUAU_REQUIRE_NO_ERRORS(result);
+    TypeArena arena;
 
-    std::optional<TypeId> ty = getType("b");
-    REQUIRE(bool(ty));
+    TypeId ty = arena.addType(TableType{});
+    getMutable<TableType>(ty)->props["x"] = {builtinTypes->numberType};
+
+    TypeId boundTy = arena.addType(TableType{});
+    getMutable<TableType>(boundTy)->boundTo = ty;
 
     ToDotOptions opts;
     opts.showPointers = false;
+
     CHECK_EQ(R"(digraph graphname {
 n1 [label="TableType 1"];
 n1 -> n2 [label="boundTo"];
-n2 [label="TableType a"];
+n2 [label="TableType 2"];
 n2 -> n3 [label="x"];
 n3 [label="number"];
 })",
-        toDot(*ty, opts));
+        toDot(boundTy, opts));
 }
 
 TEST_CASE_FIXTURE(Fixture, "builtintypes")

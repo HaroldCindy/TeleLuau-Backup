@@ -74,11 +74,15 @@ public:
     void foldJumps();
     void expandJumps();
 
+    void setFunctionTypeInfo(std::string value);
+
     void setDebugFunctionName(StringRef name);
     void setDebugFunctionLineDefined(int line);
     void setDebugLine(int line);
     void pushDebugLocal(StringRef name, uint8_t reg, uint32_t startpc, uint32_t endpc);
     void pushDebugUpval(StringRef name);
+
+    size_t getInstructionCount() const;
     uint32_t getDebugPC() const;
 
     void addDebugRemark(const char* format, ...) LUAU_PRINTF_ATTR(2, 3);
@@ -116,6 +120,7 @@ public:
     std::string dumpFunction(uint32_t id) const;
     std::string dumpEverything() const;
     std::string dumpSourceRemarks() const;
+    std::string dumpTypeInfo() const;
 
     void annotateInstruction(std::string& result, uint32_t fid, uint32_t instpos) const;
 
@@ -130,6 +135,7 @@ public:
     static std::string getError(const std::string& message);
 
     static uint8_t getVersion();
+    static uint8_t getTypeEncodingVersion();
 
 private:
     struct Constant
@@ -184,6 +190,7 @@ private:
         std::string dump;
         std::string dumpname;
         std::vector<int> dumpinstoffs;
+        std::string typeinfo;
     };
 
     struct DebugLocal

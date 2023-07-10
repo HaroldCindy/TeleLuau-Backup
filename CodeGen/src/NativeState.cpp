@@ -4,8 +4,6 @@
 #include "Luau/UnwindBuilder.h"
 
 #include "CodeGenUtils.h"
-#include "CustomExecUtils.h"
-#include "Fallbacks.h"
 
 #include "lbuiltins.h"
 #include "lgc.h"
@@ -15,8 +13,6 @@
 
 #include <math.h>
 #include <string.h>
-
-#define CODEGEN_SET_FALLBACK(op, flags) data.context.fallback[op] = {execute_##op, flags}
 
 namespace Luau
 {
@@ -33,25 +29,7 @@ NativeState::NativeState()
 
 NativeState::~NativeState() = default;
 
-void initFallbackTable(NativeState& data)
-{
-    // When fallback is completely removed, remove it from includeInsts list in lvmexecute_split.py
-    CODEGEN_SET_FALLBACK(LOP_NEWCLOSURE, 0);
-    CODEGEN_SET_FALLBACK(LOP_NAMECALL, 0);
-    CODEGEN_SET_FALLBACK(LOP_FORGPREP, kFallbackUpdatePc);
-    CODEGEN_SET_FALLBACK(LOP_GETVARARGS, 0);
-    CODEGEN_SET_FALLBACK(LOP_DUPCLOSURE, 0);
-    CODEGEN_SET_FALLBACK(LOP_PREPVARARGS, 0);
-    CODEGEN_SET_FALLBACK(LOP_BREAK, 0);
-
-    // Fallbacks that are called from partial implementation of an instruction
-    CODEGEN_SET_FALLBACK(LOP_GETGLOBAL, 0);
-    CODEGEN_SET_FALLBACK(LOP_SETGLOBAL, 0);
-    CODEGEN_SET_FALLBACK(LOP_GETTABLEKS, 0);
-    CODEGEN_SET_FALLBACK(LOP_SETTABLEKS, 0);
-}
-
-void initHelperFunctions(NativeState& data)
+void initFunctions(NativeState& data)
 {
     static_assert(sizeof(data.context.luauF_table) == sizeof(luauF_table), "fastcall tables are not of the same length");
     memcpy(data.context.luauF_table, luauF_table, sizeof(luauF_table));
@@ -80,6 +58,7 @@ void initHelperFunctions(NativeState& data)
     data.context.luaF_close = luaF_close;
 
     data.context.luaT_gettm = luaT_gettm;
+    data.context.luaT_objtypenamestr = luaT_objtypenamestr;
 
     data.context.libm_exp = exp;
     data.context.libm_pow = pow;
@@ -87,6 +66,10 @@ void initHelperFunctions(NativeState& data)
     data.context.libm_log = log;
     data.context.libm_log2 = log2;
     data.context.libm_log10 = log10;
+    data.context.libm_ldexp = ldexp;
+    data.context.libm_round = round;
+    data.context.libm_frexp = frexp;
+    data.context.libm_modf = modf;
 
     data.context.libm_asin = asin;
     data.context.libm_sin = sin;
@@ -99,11 +82,27 @@ void initHelperFunctions(NativeState& data)
     data.context.libm_tan = tan;
     data.context.libm_tanh = tanh;
 
+    data.context.forgLoopTableIter = forgLoopTableIter;
     data.context.forgLoopNodeIter = forgLoopNodeIter;
     data.context.forgLoopNonTableFallback = forgLoopNonTableFallback;
     data.context.forgPrepXnextFallback = forgPrepXnextFallback;
     data.context.callProlog = callProlog;
     data.context.callEpilogC = callEpilogC;
+
+    data.context.callFallback = callFallback;
+
+    data.context.executeGETGLOBAL = executeGETGLOBAL;
+    data.context.executeSETGLOBAL = executeSETGLOBAL;
+    data.context.executeGETTABLEKS = executeGETTABLEKS;
+    data.context.executeSETTABLEKS = executeSETTABLEKS;
+
+    data.context.executeNEWCLOSURE = executeNEWCLOSURE;
+    data.context.executeNAMECALL = executeNAMECALL;
+    data.context.executeFORGPREP = executeFORGPREP;
+    data.context.executeGETVARARGS = executeGETVARARGS;
+    data.context.executeDUPCLOSURE = executeDUPCLOSURE;
+    data.context.executePREPVARARGS = executePREPVARARGS;
+    data.context.executeSETLIST = executeSETLIST;
 }
 
 } // namespace CodeGen

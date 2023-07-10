@@ -31,12 +31,12 @@ std::optional<TypeId> Scope::lookup(Symbol sym) const
 {
     auto r = const_cast<Scope*>(this)->lookupEx(sym);
     if (r)
-        return r->first;
+        return r->first->typeId;
     else
         return std::nullopt;
 }
 
-std::optional<std::pair<TypeId, Scope*>> Scope::lookupEx(Symbol sym)
+std::optional<std::pair<Binding*, Scope*>> Scope::lookupEx(Symbol sym)
 {
     Scope* s = this;
 
@@ -44,7 +44,7 @@ std::optional<std::pair<TypeId, Scope*>> Scope::lookupEx(Symbol sym)
     {
         auto it = s->bindings.find(sym);
         if (it != s->bindings.end())
-            return std::pair{it->second.typeId, s};
+            return std::pair{&it->second, s};
 
         if (s->parent)
             s = s->parent.get();
@@ -65,7 +65,7 @@ std::optional<TypeId> Scope::lookup(DefId def) const
     return std::nullopt;
 }
 
-std::optional<TypeFun> Scope::lookupType(const Name& name)
+std::optional<TypeFun> Scope::lookupType(const Name& name) const
 {
     const Scope* scope = this;
     while (true)
@@ -85,7 +85,7 @@ std::optional<TypeFun> Scope::lookupType(const Name& name)
     }
 }
 
-std::optional<TypeFun> Scope::lookupImportedType(const Name& moduleAlias, const Name& name)
+std::optional<TypeFun> Scope::lookupImportedType(const Name& moduleAlias, const Name& name) const
 {
     const Scope* scope = this;
     while (scope)
@@ -110,7 +110,7 @@ std::optional<TypeFun> Scope::lookupImportedType(const Name& moduleAlias, const 
     return std::nullopt;
 }
 
-std::optional<TypePackId> Scope::lookupPack(const Name& name)
+std::optional<TypePackId> Scope::lookupPack(const Name& name) const
 {
     const Scope* scope = this;
     while (true)
@@ -147,6 +147,28 @@ std::optional<Binding> Scope::linearSearchForBinding(const std::string& name, bo
     }
 
     return std::nullopt;
+}
+
+// Updates the `this` scope with the refinements from the `childScope` excluding ones that doesn't exist in `this`.
+void Scope::inheritRefinements(const ScopePtr& childScope)
+{
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        for (const auto& [k, a] : childScope->dcrRefinements)
+        {
+            if (lookup(NotNull{k}))
+                dcrRefinements[k] = a;
+        }
+    }
+    else
+    {
+        for (const auto& [k, a] : childScope->refinements)
+        {
+            Symbol symbol = getBaseSymbol(k);
+            if (lookup(symbol))
+                refinements[k] = a;
+        }
+    }
 }
 
 bool subsumesStrict(Scope* left, Scope* right)

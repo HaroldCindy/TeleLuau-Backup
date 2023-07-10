@@ -49,6 +49,15 @@ static std::string compileFunction0Coverage(const char* source, int level)
     return bcb.dumpFunction(0);
 }
 
+static std::string compileTypeTable(const char* source)
+{
+    Luau::BytecodeBuilder bcb;
+    bcb.setDumpFlags(Luau::BytecodeBuilder::Dump_Code);
+    Luau::compileOrThrow(bcb, source);
+
+    return bcb.dumpTypeInfo();
+}
+
 TEST_SUITE_BEGIN("Compiler");
 
 TEST_CASE("CompileToBytecode")
@@ -1025,8 +1034,6 @@ L0: RETURN R0 0
 
 TEST_CASE("AndOr")
 {
-    ScopedFastFlag luauSelfAssignmentSkip{"LuauSelfAssignmentSkip", true};
-
     // codegen for constant, local, global for and
     CHECK_EQ("\n" + compileFunction0("local a = 1 a = a and 2 return a"), R"(
 LOADN R0 1
@@ -1277,15 +1284,11 @@ RETURN R1 1
 
 TEST_CASE("InterpStringWithNoExpressions")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     CHECK_EQ(compileFunction0(R"(return "hello")"), compileFunction0("return `hello`"));
 }
 
 TEST_CASE("InterpStringZeroCost")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     CHECK_EQ("\n" + compileFunction0(R"(local _ = `hello, {"world"}!`)"),
         R"(
 LOADK R1 K0 ['hello, %*!']
@@ -1299,8 +1302,6 @@ RETURN R0 0
 
 TEST_CASE("InterpStringRegisterCleanup")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     CHECK_EQ("\n" + compileFunction0(R"(
             local a, b, c = nil, "um", "uh oh"
             a = `foo{"bar"}`
@@ -1325,9 +1326,6 @@ RETURN R0 0
 
 TEST_CASE("InterpStringRegisterLimit")
 {
-    ScopedFastFlag luauInterpolatedStringBaseSupport{"LuauInterpolatedStringBaseSupport", true};
-    ScopedFastFlag luauCompileInterpStringLimit{"LuauCompileInterpStringLimit", true};
-
     CHECK_THROWS_AS(compileFunction0(("local a = `" + rep("{1}", 254) + "`").c_str()), std::exception);
     CHECK_THROWS_AS(compileFunction0(("local a = `" + rep("{1}", 253) + "`").c_str()), std::exception);
 }
@@ -1695,7 +1693,6 @@ CALL R0 0 1
 LOADK R1 K3 [0.5]
 JUMPIFNOTLT R0 R1 L1
 RETURN R0 0
-JUMP L1
 L1: JUMPBACK L0
 RETURN R0 0
 )");
@@ -1720,7 +1717,6 @@ CALL R0 0 1
 LOADK R1 K3 [0.5]
 JUMPIFNOTLT R0 R1 L2
 JUMP L1
-JUMP L2
 JUMP L2
 L1: JUMPBACK L0
 L2: GETIMPORT R0 5 [error]
@@ -2223,6 +2219,46 @@ TEST_CASE("RecursionParse")
     {
         CHECK_EQ(std::string(e.what()), "Exceeded allowed recursion depth; simplify your block to make the code compile");
     }
+
+    try
+    {
+        Luau::compileOrThrow(bcb, "local f: " + rep("(", 1500) + "nil" + rep(")", 1500));
+        CHECK(!"Expected exception");
+    }
+    catch (std::exception& e)
+    {
+        CHECK_EQ(std::string(e.what()), "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
+    }
+
+    try
+    {
+        Luau::compileOrThrow(bcb, "local f: () " + rep("-> ()", 1500));
+        CHECK(!"Expected exception");
+    }
+    catch (std::exception& e)
+    {
+        CHECK_EQ(std::string(e.what()), "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
+    }
+
+    try
+    {
+        Luau::compileOrThrow(bcb, "local f: " + rep("{x:", 1500) + "nil" + rep("}", 1500));
+        CHECK(!"Expected exception");
+    }
+    catch (std::exception& e)
+    {
+        CHECK_EQ(std::string(e.what()), "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
+    }
+
+    try
+    {
+        Luau::compileOrThrow(bcb, "local f: " + rep("(nil & ", 1500) + "nil" + rep(")", 1500));
+        CHECK(!"Expected exception");
+    }
+    catch (std::exception& e)
+    {
+        CHECK_EQ(std::string(e.what()), "Exceeded allowed recursion depth; simplify your type annotation to make the code compile");
+    }
 }
 
 TEST_CASE("ArrayIndexLiteral")
@@ -2269,8 +2305,6 @@ L1: RETURN R3 -1
 
 TEST_CASE("UpvaluesLoopsBytecode")
 {
-    ScopedFastFlag luauSelfAssignmentSkip{"LuauSelfAssignmentSkip", true};
-
     CHECK_EQ("\n" + compileFunction(R"(
 function test()
     for i=1,10 do
@@ -4807,10 +4841,10 @@ FORNPREP R1 L3
 L0: FASTCALL1 24 R3 L1
 MOVE R6 R3
 GETIMPORT R5 2 [math.sin]
-CALL R5 1 -1
-L1: FASTCALL 2 L2
+CALL R5 1 1
+L1: FASTCALL1 2 R5 L2
 GETIMPORT R4 4 [math.abs]
-CALL R4 -1 1
+CALL R4 1 1
 L2: SETTABLE R4 R0 R3
 FORNLOOP R1 L0
 L3: RETURN R0 1
@@ -5168,8 +5202,6 @@ RETURN R1 1
 
 TEST_CASE("InlineMutate")
 {
-    ScopedFastFlag luauSelfAssignmentSkip{"LuauSelfAssignmentSkip", true};
-
     // if the argument is mutated, it gets a register even if the value is constant
     CHECK_EQ("\n" + compileFunction(R"(
 local function foo(a)
@@ -5773,7 +5805,7 @@ RETURN R3 1
 
 TEST_CASE("InlineRecurseArguments")
 {
-    // we can't inline a function if it's used to compute its own arguments
+    // the example looks silly but we preserve it verbatim as it was found by fuzzer for a previous version of the compiler
     CHECK_EQ("\n" + compileFunction(R"(
 local function foo(a, b)
 end
@@ -5782,15 +5814,82 @@ foo(foo(foo,foo(foo,foo))[foo])
                         1, 2),
         R"(
 DUPCLOSURE R0 K0 ['foo']
-MOVE R2 R0
-MOVE R3 R0
-MOVE R4 R0
-MOVE R5 R0
-MOVE R6 R0
-CALL R4 2 -1
-CALL R2 -1 1
+LOADNIL R3
+LOADNIL R2
 GETTABLE R1 R2 R0
 RETURN R0 0
+)");
+
+    // verify that invocations of the inlined function in any position for computing the arguments to itself compile
+    CHECK_EQ("\n" + compileFunction(R"(
+local function foo(a, b)
+    return a + b
+end
+
+local x, y, z = ...
+
+return foo(foo(x, y), foo(z, 1))
+)",
+                        1, 2),
+        R"(
+DUPCLOSURE R0 K0 ['foo']
+GETVARARGS R1 3
+ADD R5 R1 R2
+ADDK R6 R3 K1 [1]
+ADD R4 R5 R6
+RETURN R4 1
+)");
+
+    // verify that invocations of the inlined function in any position for computing the arguments to itself compile, including constants and locals
+    // note that foo(k1, k2) doesn't get constant folded, so there's still actual math emitted for some of the calls below
+    CHECK_EQ("\n" + compileFunction(R"(
+local function foo(a, b)
+    return a + b
+end
+
+local x, y, z = ...
+
+return
+    foo(foo(1, 2), 3),
+    foo(1, foo(2, 3)),
+    foo(x, foo(2, 3)),
+    foo(x, foo(y, 3)),
+    foo(x, foo(y, z)),
+    foo(x+0, foo(y, z)),
+    foo(x+0, foo(y+0, z)),
+    foo(x+0, foo(y, z+0)),
+    foo(1, foo(x, y))
+)",
+                        1, 2),
+        R"(
+DUPCLOSURE R0 K0 ['foo']
+GETVARARGS R1 3
+LOADN R5 3
+ADDK R4 R5 K1 [3]
+LOADN R6 5
+LOADN R7 1
+ADD R5 R7 R6
+LOADN R7 5
+ADD R6 R1 R7
+ADDK R8 R2 K1 [3]
+ADD R7 R1 R8
+ADD R9 R2 R3
+ADD R8 R1 R9
+ADDK R10 R1 K2 [0]
+ADD R11 R2 R3
+ADD R9 R10 R11
+ADDK R11 R1 K2 [0]
+ADDK R13 R2 K2 [0]
+ADD R12 R13 R3
+ADD R10 R11 R12
+ADDK R12 R1 K2 [0]
+ADDK R14 R3 K2 [0]
+ADD R13 R2 R14
+ADD R11 R12 R13
+ADD R13 R1 R2
+LOADN R14 1
+ADD R12 R14 R13
+RETURN R4 9
 )");
 }
 
@@ -6007,7 +6106,7 @@ CALL R1 1 -1
 RETURN R1 -1
 )");
 
-    // and unfortunately we can't do this analysis for builtins or method calls due to getfenv
+    // we do this for builtins though as we assume getfenv is not used or is not changing arity
     CHECK_EQ("\n" + compileFunction(R"(
 local function foo(a)
     return math.abs(a)
@@ -6018,10 +6117,8 @@ return foo(42)
                         1, 2),
         R"(
 DUPCLOSURE R0 K0 ['foo']
-MOVE R1 R0
-LOADN R2 42
-CALL R1 1 -1
-RETURN R1 -1
+LOADN R1 42
+RETURN R1 1
 )");
 }
 
@@ -6339,8 +6436,8 @@ L8: LOADN R10 1
 FASTCALL2K 19 R10 K3 L9 [true]
 LOADK R11 K3 [true]
 GETIMPORT R9 26 [math.min]
-CALL R9 2 -1
-L9: RETURN R0 -1
+CALL R9 2 1
+L9: RETURN R0 10
 )");
 }
 
@@ -6763,8 +6860,6 @@ MOVE R1 R3
 RETURN R0 0
 )");
 
-    ScopedFastFlag luauMultiAssignmentConflictFix{"LuauMultiAssignmentConflictFix", true};
-
     // because we perform assignments to complex l-values after assignments to locals, we make sure register conflicts are tracked accordingly
     CHECK_EQ("\n" + compileFunction0(R"(
         local a, b = ...
@@ -6802,8 +6897,6 @@ L0: RETURN R1 -1
 
 TEST_CASE("SkipSelfAssignment")
 {
-    ScopedFastFlag luauSelfAssignmentSkip{"LuauSelfAssignmentSkip", true};
-
     CHECK_EQ("\n" + compileFunction0("local a a = a"), R"(
 LOADNIL R0
 RETURN R0 0
@@ -6824,6 +6917,305 @@ RETURN R0 0
 LOADNIL R0
 MOVE R0 R0
 RETURN R0 0
+)");
+}
+
+TEST_CASE("ElideJumpAfterIf")
+{
+    // break refers to outer loop => we can elide unconditional branches
+    CHECK_EQ("\n" + compileFunction0(R"(
+local foo, bar = ...
+repeat
+    if foo then break
+    elseif bar then break
+    end
+    print(1234)
+until foo == bar
+)"),
+        R"(
+GETVARARGS R0 2
+L0: JUMPIFNOT R0 L1
+RETURN R0 0
+L1: JUMPIF R1 L2
+GETIMPORT R2 1 [print]
+LOADN R3 1234
+CALL R2 1 0
+JUMPIFEQ R0 R1 L2
+JUMPBACK L0
+L2: RETURN R0 0
+)");
+
+    // break refers to inner loop => branches remain
+    CHECK_EQ("\n" + compileFunction0(R"(
+local foo, bar = ...
+repeat
+    if foo then while true do break end
+    elseif bar then while true do break end
+    end
+    print(1234)
+until foo == bar
+)"),
+        R"(
+GETVARARGS R0 2
+L0: JUMPIFNOT R0 L1
+JUMP L2
+JUMPBACK L2
+JUMP L2
+L1: JUMPIFNOT R1 L2
+JUMP L2
+JUMPBACK L2
+L2: GETIMPORT R2 1 [print]
+LOADN R3 1234
+CALL R2 1 0
+JUMPIFEQ R0 R1 L3
+JUMPBACK L0
+L3: RETURN R0 0
+)");
+}
+
+TEST_CASE("BuiltinArity")
+{
+    // by default we can't assume that we know parameter/result count for builtins as they can be overridden at runtime
+    CHECK_EQ("\n" + compileFunction(R"(
+return math.abs(unknown())
+)",
+                        0, 1),
+        R"(
+GETIMPORT R1 1 [unknown]
+CALL R1 0 -1
+FASTCALL 2 L0
+GETIMPORT R0 4 [math.abs]
+CALL R0 -1 -1
+L0: RETURN R0 -1
+)");
+
+    // however, when using optimization level 2, we assume compile time knowledge about builtin behavior even if we can't deoptimize that with fenv
+    // in the test case below, this allows us to synthesize a more efficient FASTCALL1 (and use a fixed-return call to unknown)
+    CHECK_EQ("\n" + compileFunction(R"(
+return math.abs(unknown())
+)",
+                        0, 2),
+        R"(
+GETIMPORT R1 1 [unknown]
+CALL R1 0 1
+FASTCALL1 2 R1 L0
+GETIMPORT R0 4 [math.abs]
+CALL R0 1 1
+L0: RETURN R0 1
+)");
+
+    // some builtins are variadic, and as such they can't use fixed-length fastcall variants
+    CHECK_EQ("\n" + compileFunction(R"(
+return math.max(0, unknown())
+)",
+                        0, 2),
+        R"(
+LOADN R1 0
+GETIMPORT R2 1 [unknown]
+CALL R2 0 -1
+FASTCALL 18 L0
+GETIMPORT R0 4 [math.max]
+CALL R0 -1 1
+L0: RETURN R0 1
+)");
+
+    // some builtins are not variadic but don't have a fixed number of arguments; we currently don't optimize this although we might start to in the
+    // future
+    CHECK_EQ("\n" + compileFunction(R"(
+return bit32.extract(0, 1, unknown())
+)",
+                        0, 2),
+        R"(
+LOADN R1 0
+LOADN R2 1
+GETIMPORT R3 1 [unknown]
+CALL R3 0 -1
+FASTCALL 34 L0
+GETIMPORT R0 4 [bit32.extract]
+CALL R0 -1 1
+L0: RETURN R0 1
+)");
+
+    // importantly, this optimization also helps us get around the multret inlining restriction for builtin wrappers
+    CHECK_EQ("\n" + compileFunction(R"(
+local function new()
+    return setmetatable({}, MT)
+end
+
+return new()
+)",
+                        1, 2),
+        R"(
+DUPCLOSURE R0 K0 ['new']
+NEWTABLE R2 0 0
+GETIMPORT R3 2 [MT]
+FASTCALL2 61 R2 R3 L0
+GETIMPORT R1 4 [setmetatable]
+CALL R1 2 1
+L0: RETURN R1 1
+)");
+
+    // note that the results of this optimization are benign in fixed-arg contexts which dampens the effect of fenv substitutions on correctness in
+    // practice
+    CHECK_EQ("\n" + compileFunction(R"(
+local x = ...
+local y, z = type(x)
+return type(y, z)
+)",
+                        0, 2),
+        R"(
+GETVARARGS R0 1
+FASTCALL1 40 R0 L0
+MOVE R2 R0
+GETIMPORT R1 1 [type]
+CALL R1 1 2
+L0: FASTCALL2 40 R1 R2 L1
+MOVE R4 R1
+MOVE R5 R2
+GETIMPORT R3 1 [type]
+CALL R3 2 1
+L1: RETURN R3 1
+)");
+}
+
+TEST_CASE("EncodedTypeTable")
+{
+    ScopedFastFlag sff("LuauCompileFunctionType", true);
+
+    CHECK_EQ("\n" + compileTypeTable(R"(
+function myfunc(test: string, num: number)
+    print(test)
+end
+
+function myfunc2(test: number?)
+end
+
+function myfunc3(test: string, n: number)
+end
+
+function myfunc4(test: string | number, n: number)
+end
+
+-- Promoted to function(any, any) since general unions are not supported.
+-- Functions with all `any` parameters will have omitted type info.
+function myfunc5(test: string | number, n: number | boolean)
+end
+
+function myfunc6(test: (number) -> string)
+end
+
+myfunc('test')
+)"),
+        R"(
+0: function(string, number)
+1: function(number?)
+2: function(string, number)
+3: function(any, number)
+5: function(function)
+)");
+
+    CHECK_EQ("\n" + compileTypeTable(R"(
+local Str = {
+    a = 1
+}
+
+-- Implicit `self` parameter is automatically assumed to be table type.
+function Str:test(n: number)
+    print(self.a, n)
+end
+
+Str:test(234)
+)"),
+        R"(
+0: function(table, number)
+)");
+}
+
+TEST_CASE("HostTypesAreUserdata")
+{
+    ScopedFastFlag sff("LuauCompileFunctionType", true);
+
+    CHECK_EQ("\n" + compileTypeTable(R"(
+function myfunc(test: string, num: number)
+    print(test)
+end
+
+function myfunc2(test: Instance, num: number)
+end
+
+type Foo = string
+
+function myfunc3(test: string, n: Foo)
+end
+
+function myfunc4<Bar>(test: Bar, n: Part)
+end
+)"),
+        R"(
+0: function(string, number)
+1: function(userdata, number)
+2: function(string, string)
+3: function(any, userdata)
+)");
+}
+
+TEST_CASE("TypeAliasScoping")
+{
+    ScopedFastFlag sff("LuauCompileFunctionType", true);
+
+    CHECK_EQ("\n" + compileTypeTable(R"(
+do
+    type Part = number
+end
+
+function myfunc1(test: Part, num: number)
+end
+
+do
+    type Part = number
+
+    function myfunc2(test: Part, num: number)
+    end
+end
+
+repeat
+    type Part = number
+until (function(test: Part, num: number) end)()
+
+function myfunc4(test: Instance, num: number)
+end
+
+type Instance = string
+)"),
+        R"(
+0: function(userdata, number)
+1: function(number, number)
+2: function(number, number)
+3: function(string, number)
+)");
+}
+
+TEST_CASE("TypeAliasResolve")
+{
+    ScopedFastFlag sff("LuauCompileFunctionType", true);
+
+    CHECK_EQ("\n" + compileTypeTable(R"(
+type Foo1 = number
+type Foo2 = { number }
+type Foo3 = Part
+type Foo4 = Foo1 -- we do not resolve aliases within aliases
+type Foo5<X> = X
+
+function myfunc(f1: Foo1, f2: Foo2, f3: Foo3, f4: Foo4, f5: Foo5<number>)
+end
+
+function myfuncerr(f1: Foo1<string>, f2: Foo5)
+end
+
+)"),
+        R"(
+0: function(number, table, userdata, any, any)
+1: function(number, any)
 )");
 }
 

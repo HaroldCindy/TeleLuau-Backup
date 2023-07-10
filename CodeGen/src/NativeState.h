@@ -23,36 +23,11 @@ namespace CodeGen
 
 class UnwindBuilder;
 
-using FallbackFn = const Instruction*(lua_State* L, const Instruction* pc, StkId base, TValue* k);
-
-constexpr uint8_t kFallbackUpdatePc = 1 << 0;
-
-struct NativeFallback
-{
-    FallbackFn* fallback;
-    uint8_t flags;
-};
-
-struct NativeProto
-{
-    uintptr_t entryTarget = 0;
-    uintptr_t* instTargets = nullptr; // TODO: NativeProto should be variable-size with all target embedded
-
-    Proto* proto = nullptr;
-    uint32_t location = 0;
-};
-
 struct NativeContext
 {
     // Gateway (C => native transition) entry & exit, compiled at runtime
     uint8_t* gateEntry = nullptr;
     uint8_t* gateExit = nullptr;
-
-    // Opcode fallbacks, implemented in C
-    NativeFallback fallback[LOP__COUNT] = {};
-
-    // Fast call methods, implemented in C
-    luau_FastFunction luauF_table[256] = {};
 
     // Helper functions, implemented in C
     int (*luaV_lessthan)(lua_State* L, const TValue* l, const TValue* r) = nullptr;
@@ -63,7 +38,7 @@ struct NativeContext
     void (*luaV_prepareFORN)(lua_State* L, StkId plimit, StkId pstep, StkId pinit) = nullptr;
     void (*luaV_gettable)(lua_State* L, const TValue* t, TValue* key, StkId val) = nullptr;
     void (*luaV_settable)(lua_State* L, const TValue* t, TValue* key, StkId val) = nullptr;
-    void (*luaV_getimport)(lua_State* L, Table* env, TValue* k, uint32_t id, bool propagatenil) = nullptr;
+    void (*luaV_getimport)(lua_State* L, Table* env, TValue* k, StkId res, uint32_t id, bool propagatenil) = nullptr;
     void (*luaV_concat)(lua_State* L, int total, int last) = nullptr;
 
     int (*luaH_getn)(Table* t) = nullptr;
@@ -79,6 +54,7 @@ struct NativeContext
     void (*luaF_close)(lua_State* L, StkId level) = nullptr;
 
     const TValue* (*luaT_gettm)(Table* events, TMS event, TString* ename) = nullptr;
+    const TString* (*luaT_objtypenamestr)(lua_State* L, const TValue* o) = nullptr;
 
     double (*libm_exp)(double) = nullptr;
     double (*libm_pow)(double, double) = nullptr;
@@ -96,14 +72,39 @@ struct NativeContext
     double (*libm_log)(double) = nullptr;
     double (*libm_log2)(double) = nullptr;
     double (*libm_log10)(double) = nullptr;
+    double (*libm_ldexp)(double, int) = nullptr;
+    double (*libm_round)(double) = nullptr;
+    double (*libm_frexp)(double, int*) = nullptr;
+    double (*libm_modf)(double, double*) = nullptr;
 
     // Helper functions
+    bool (*forgLoopTableIter)(lua_State* L, Table* h, int index, TValue* ra) = nullptr;
     bool (*forgLoopNodeIter)(lua_State* L, Table* h, int index, TValue* ra) = nullptr;
     bool (*forgLoopNonTableFallback)(lua_State* L, int insnA, int aux) = nullptr;
     void (*forgPrepXnextFallback)(lua_State* L, TValue* ra, int pc) = nullptr;
     Closure* (*callProlog)(lua_State* L, TValue* ra, StkId argtop, int nresults) = nullptr;
     void (*callEpilogC)(lua_State* L, int nresults, int n) = nullptr;
+
+    Closure* (*callFallback)(lua_State* L, StkId ra, StkId argtop, int nresults) = nullptr;
+
+    // Opcode fallbacks, implemented in C
+    const Instruction* (*executeGETGLOBAL)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeSETGLOBAL)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeGETTABLEKS)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeSETTABLEKS)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeNEWCLOSURE)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeNAMECALL)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeSETLIST)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeFORGPREP)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeGETVARARGS)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executeDUPCLOSURE)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+    const Instruction* (*executePREPVARARGS)(lua_State* L, const Instruction* pc, StkId base, TValue* k) = nullptr;
+
+    // Fast call methods, implemented in C
+    luau_FastFunction luauF_table[256] = {};
 };
+
+using GateFn = int (*)(lua_State*, Proto*, uintptr_t, NativeContext*);
 
 struct NativeState
 {
@@ -119,8 +120,7 @@ struct NativeState
     NativeContext context;
 };
 
-void initFallbackTable(NativeState& data);
-void initHelperFunctions(NativeState& data);
+void initFunctions(NativeState& data);
 
 } // namespace CodeGen
 } // namespace Luau

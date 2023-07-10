@@ -66,7 +66,7 @@ struct Fixture
     CheckResult check(const std::string& source);
 
     LintResult lint(const std::string& source, const std::optional<LintOptions>& lintOptions = {});
-    LintResult lintTyped(const std::string& source, const std::optional<LintOptions>& lintOptions = {});
+    LintResult lintModule(const ModuleName& moduleName, const std::optional<LintOptions>& lintOptions = {});
 
     /// Parse with all language extensions enabled
     ParseResult parseEx(const std::string& source, const ParseOptions& parseOptions = {});
@@ -94,7 +94,6 @@ struct Fixture
     TypeId requireTypeAlias(const std::string& name);
 
     ScopedFastFlag sff_DebugLuauFreezeArena;
-    ScopedFastFlag sff_UnknownNever{"LuauUnknownAndNeverType", true};
 
     TestFileResolver fileResolver;
     TestConfigResolver configResolver;
@@ -102,7 +101,6 @@ struct Fixture
     std::unique_ptr<SourceModule> sourceModule;
     Frontend frontend;
     InternalErrorReporter ice;
-    TypeChecker& typeChecker;
     NotNull<BuiltinTypes> builtinTypes;
 
     std::string decorateWithTypes(const std::string& code);

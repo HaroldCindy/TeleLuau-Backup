@@ -54,7 +54,8 @@ TEST_SUITE_BEGIN("AllocatorTests");
 TEST_CASE("allocator_can_be_moved")
 {
     Counter* c = nullptr;
-    auto inner = [&]() {
+    auto inner = [&]()
+    {
         Luau::Allocator allocator;
         c = allocator.alloc<Counter>();
         Luau::Allocator moved{std::move(allocator)};
@@ -112,14 +113,6 @@ TEST_CASE_FIXTURE(Fixture, "can_haz_annotations")
     REQUIRE(block != nullptr);
 }
 
-TEST_CASE_FIXTURE(Fixture, "local_cannot_have_annotation_with_extensions_disabled")
-{
-    Luau::ParseOptions options;
-    options.allowTypeAnnotations = false;
-
-    CHECK_THROWS_AS(parse("local foo: string = \"Hello Types!\"", options), std::exception);
-}
-
 TEST_CASE_FIXTURE(Fixture, "local_with_annotation")
 {
     AstStatBlock* block = parse(R"(
@@ -148,14 +141,6 @@ TEST_CASE_FIXTURE(Fixture, "type_names_can_contain_dots")
     )");
 
     REQUIRE(block != nullptr);
-}
-
-TEST_CASE_FIXTURE(Fixture, "functions_cannot_have_return_annotations_if_extensions_are_disabled")
-{
-    Luau::ParseOptions options;
-    options.allowTypeAnnotations = false;
-
-    CHECK_THROWS_AS(parse("function foo(): number return 55 end", options), std::exception);
 }
 
 TEST_CASE_FIXTURE(Fixture, "functions_can_have_return_annotations")
@@ -395,14 +380,6 @@ TEST_CASE_FIXTURE(Fixture, "return_type_is_an_intersection_type_if_led_with_one_
     CHECK(returnAnnotation->types.data[1]->as<AstTypeFunction>());
 }
 
-TEST_CASE_FIXTURE(Fixture, "illegal_type_alias_if_extensions_are_disabled")
-{
-    Luau::ParseOptions options;
-    options.allowTypeAnnotations = false;
-
-    CHECK_THROWS_AS(parse("type A = number", options), std::exception);
-}
-
 TEST_CASE_FIXTURE(Fixture, "type_alias_to_a_typeof")
 {
     AstStatBlock* block = parse(R"(
@@ -456,6 +433,24 @@ TEST_CASE_FIXTURE(Fixture, "type_alias_should_work_when_name_is_also_local")
     REQUIRE(block->body.size == 2);
     REQUIRE(block->body.data[0]->is<AstStatLocal>());
     REQUIRE(block->body.data[1]->is<AstStatTypeAlias>());
+}
+
+TEST_CASE_FIXTURE(Fixture, "type_alias_span_is_correct")
+{
+    AstStatBlock* block = parse(R"(
+        type Packed1<T...> = (T...) -> (T...)
+        type Packed2<T...> = (Packed1<T...>, T...) -> (Packed1<T...>, T...)
+    )");
+
+    REQUIRE(block != nullptr);
+    REQUIRE(2 == block->body.size);
+    AstStatTypeAlias* t1 = block->body.data[0]->as<AstStatTypeAlias>();
+    REQUIRE(t1);
+    REQUIRE(Location{Position{1, 8}, Position{1, 45}} == t1->location);
+
+    AstStatTypeAlias* t2 = block->body.data[1]->as<AstStatTypeAlias>();
+    REQUIRE(t2);
+    REQUIRE(Location{Position{2, 8}, Position{2, 75}} == t2->location);
 }
 
 TEST_CASE_FIXTURE(Fixture, "parse_error_messages")
@@ -683,21 +678,12 @@ TEST_CASE_FIXTURE(Fixture, "parse_numbers_binary")
 
 TEST_CASE_FIXTURE(Fixture, "parse_numbers_error")
 {
-    ScopedFastFlag luauErrorDoubleHexPrefix{"LuauErrorDoubleHexPrefix", true};
-
     CHECK_EQ(getParseError("return 0b123"), "Malformed number");
     CHECK_EQ(getParseError("return 123x"), "Malformed number");
     CHECK_EQ(getParseError("return 0xg"), "Malformed number");
     CHECK_EQ(getParseError("return 0x0x123"), "Malformed number");
     CHECK_EQ(getParseError("return 0xffffffffffffffffffffllllllg"), "Malformed number");
     CHECK_EQ(getParseError("return 0x0xffffffffffffffffffffffffffff"), "Malformed number");
-}
-
-TEST_CASE_FIXTURE(Fixture, "parse_numbers_error_soft")
-{
-    ScopedFastFlag luauErrorDoubleHexPrefix{"LuauErrorDoubleHexPrefix", false};
-
-    CHECK_EQ(getParseError("return 0x0x0x0x0x0x0x0"), "Malformed number");
 }
 
 TEST_CASE_FIXTURE(Fixture, "break_return_not_last_error")
@@ -906,8 +892,6 @@ TEST_CASE_FIXTURE(Fixture, "parse_compound_assignment_error_multiple")
 
 TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_double_brace_begin")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     try
     {
         parse(R"(
@@ -923,8 +907,6 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_double_brace_begin")
 
 TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_double_brace_mid")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     try
     {
         parse(R"(
@@ -940,9 +922,8 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_double_brace_mid")
 
 TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_without_end_brace")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
-    auto columnOfEndBraceError = [this](const char* code) {
+    auto columnOfEndBraceError = [this](const char* code)
+    {
         try
         {
             parse(code);
@@ -966,8 +947,6 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_without_end_brace")
 
 TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_without_end_brace_in_table")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     try
     {
         parse(R"(
@@ -986,8 +965,6 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_without_end_brace_in_table
 
 TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_mid_without_end_brace_in_table")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     try
     {
         parse(R"(
@@ -1006,8 +983,6 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_mid_without_end_brace_in_t
 
 TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_as_type_fail")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     try
     {
         parse(R"(
@@ -1028,8 +1003,6 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_as_type_fail")
 
 TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_call_without_parens")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     try
     {
         parse(R"(
@@ -1040,6 +1013,33 @@ TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_call_without_parens")
     catch (const ParseErrors& e)
     {
         CHECK_EQ("Expected identifier when parsing expression, got `{", e.getErrors().front().getMessage());
+    }
+}
+
+TEST_CASE_FIXTURE(Fixture, "parse_interpolated_string_without_expression")
+{
+    try
+    {
+        parse(R"(
+            print(`{}`)
+        )");
+        FAIL("Expected ParseErrors to be thrown");
+    }
+    catch (const ParseErrors& e)
+    {
+        CHECK_EQ("Malformed interpolated string, expected expression inside '{}'", e.getErrors().front().getMessage());
+    }
+
+    try
+    {
+        parse(R"(
+            print(`{}{1}`)
+        )");
+        FAIL("Expected ParseErrors to be thrown");
+    }
+    catch (const ParseErrors& e)
+    {
+        CHECK_EQ("Malformed interpolated string, expected expression inside '{}'", e.getErrors().front().getMessage());
     }
 }
 
@@ -1884,6 +1884,44 @@ TEST_CASE_FIXTURE(Fixture, "class_method_properties")
     CHECK_EQ(2, klass2->props.size);
 }
 
+TEST_CASE_FIXTURE(Fixture, "class_indexer")
+{
+    ScopedFastFlag LuauParseDeclareClassIndexer("LuauParseDeclareClassIndexer", true);
+
+    AstStatBlock* stat = parseEx(R"(
+        declare class Foo
+            prop: boolean
+            [string]: number
+        end
+    )")
+                             .root;
+
+    REQUIRE_EQ(stat->body.size, 1);
+
+    AstStatDeclareClass* declaredClass = stat->body.data[0]->as<AstStatDeclareClass>();
+    REQUIRE(declaredClass);
+    REQUIRE(declaredClass->indexer);
+    REQUIRE(declaredClass->indexer->indexType->is<AstTypeReference>());
+    CHECK(declaredClass->indexer->indexType->as<AstTypeReference>()->name == "string");
+    REQUIRE(declaredClass->indexer->resultType->is<AstTypeReference>());
+    CHECK(declaredClass->indexer->resultType->as<AstTypeReference>()->name == "number");
+
+    const ParseResult p1 = matchParseError(R"(
+        declare class Foo
+            [string]: number
+            -- can only have one indexer
+            [number]: number
+        end
+        )",
+        "Cannot have more than one class indexer");
+
+    REQUIRE_EQ(1, p1.root->body.size);
+
+    AstStatDeclareClass* klass = p1.root->body.data[0]->as<AstStatDeclareClass>();
+    REQUIRE(klass != nullptr);
+    CHECK(klass->indexer);
+}
+
 TEST_CASE_FIXTURE(Fixture, "parse_variadics")
 {
     //clang-format off
@@ -2349,7 +2387,8 @@ public:
 
 TEST_CASE_FIXTURE(Fixture, "recovery_of_parenthesized_expressions")
 {
-    auto checkAstEquivalence = [this](const char* codeWithErrors, const char* code) {
+    auto checkAstEquivalence = [this](const char* codeWithErrors, const char* code)
+    {
         try
         {
             parse(codeWithErrors);
@@ -2369,7 +2408,8 @@ TEST_CASE_FIXTURE(Fixture, "recovery_of_parenthesized_expressions")
         CHECK_EQ(counterWithErrors.count, counter.count);
     };
 
-    auto checkRecovery = [this, checkAstEquivalence](const char* codeWithErrors, const char* code, unsigned expectedErrorCount) {
+    auto checkRecovery = [this, checkAstEquivalence](const char* codeWithErrors, const char* code, unsigned expectedErrorCount)
+    {
         try
         {
             parse(codeWithErrors);
@@ -2815,8 +2855,6 @@ TEST_CASE_FIXTURE(Fixture, "get_a_nice_error_when_there_is_no_comma_after_last_t
 
 TEST_CASE_FIXTURE(Fixture, "missing_default_type_pack_argument_after_variadic_type_parameter")
 {
-    ScopedFastFlag sff{"LuauParserErrorsOnMissingDefaultTypePackArgument", true};
-
     ParseResult result = tryParse(R"(
         type Foo<T... = > = nil
     )");

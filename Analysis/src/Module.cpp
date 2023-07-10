@@ -10,17 +10,13 @@
 #include "Luau/Type.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/TypePack.h"
-#include "Luau/TypeReduction.h"
 #include "Luau/VisitType.h"
 
 #include <algorithm>
 
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution);
-LUAU_FASTFLAGVARIABLE(LuauClonePublicInterfaceLess, false);
-LUAU_FASTFLAG(LuauSubstitutionReentrant);
-LUAU_FASTFLAG(LuauScopelessModule);
-LUAU_FASTFLAG(LuauClassTypeVarsInSubstitution);
-LUAU_FASTFLAG(LuauSubstitutionFixMissingFields);
+LUAU_FASTFLAGVARIABLE(LuauClonePublicInterfaceLess2, false);
+LUAU_FASTFLAGVARIABLE(LuauCloneSkipNonInternalVisit, false);
 
 namespace Luau
 {
@@ -38,14 +34,14 @@ static bool contains(Position pos, Comment comment)
         return false;
 }
 
-bool isWithinComment(const SourceModule& sourceModule, Position pos)
+static bool isWithinComment(const std::vector<Comment>& commentLocations, Position pos)
 {
-    auto iter = std::lower_bound(sourceModule.commentLocations.begin(), sourceModule.commentLocations.end(),
-        Comment{Lexeme::Comment, Location{pos, pos}}, [](const Comment& a, const Comment& b) {
+    auto iter = std::lower_bound(
+        commentLocations.begin(), commentLocations.end(), Comment{Lexeme::Comment, Location{pos, pos}}, [](const Comment& a, const Comment& b) {
             return a.location.end < b.location.end;
         });
 
-    if (iter == sourceModule.commentLocations.end())
+    if (iter == commentLocations.end())
         return false;
 
     if (contains(pos, *iter))
@@ -54,10 +50,20 @@ bool isWithinComment(const SourceModule& sourceModule, Position pos)
     // Due to the nature of std::lower_bound, it is possible that iter points at a comment that ends
     // at pos.  We'll try the next comment, if it exists.
     ++iter;
-    if (iter == sourceModule.commentLocations.end())
+    if (iter == commentLocations.end())
         return false;
 
     return contains(pos, *iter);
+}
+
+bool isWithinComment(const SourceModule& sourceModule, Position pos)
+{
+    return isWithinComment(sourceModule.commentLocations, pos);
+}
+
+bool isWithinComment(const ParseResult& result, Position pos)
+{
+    return isWithinComment(result.commentLocations, pos);
 }
 
 struct ClonePublicInterface : Substitution
@@ -90,6 +96,22 @@ struct ClonePublicInterface : Substitution
         return tp->owningArena == &module->internalTypes;
     }
 
+    bool ignoreChildrenVisit(TypeId ty) override
+    {
+        if (FFlag::LuauCloneSkipNonInternalVisit && ty->owningArena != &module->internalTypes)
+            return true;
+
+        return false;
+    }
+
+    bool ignoreChildrenVisit(TypePackId tp) override
+    {
+        if (FFlag::LuauCloneSkipNonInternalVisit && tp->owningArena != &module->internalTypes)
+            return true;
+
+        return false;
+    }
+
     TypeId clean(TypeId ty) override
     {
         TypeId result = clone(ty);
@@ -109,8 +131,6 @@ struct ClonePublicInterface : Substitution
 
     TypeId cloneType(TypeId ty)
     {
-        LUAU_ASSERT(FFlag::LuauSubstitutionReentrant && FFlag::LuauSubstitutionFixMissingFields);
-
         std::optional<TypeId> result = substitute(ty);
         if (result)
         {
@@ -125,8 +145,6 @@ struct ClonePublicInterface : Substitution
 
     TypePackId cloneTypePack(TypePackId tp)
     {
-        LUAU_ASSERT(FFlag::LuauSubstitutionReentrant && FFlag::LuauSubstitutionFixMissingFields);
-
         std::optional<TypePackId> result = substitute(tp);
         if (result)
         {
@@ -141,8 +159,6 @@ struct ClonePublicInterface : Substitution
 
     TypeFun cloneTypeFun(const TypeFun& tf)
     {
-        LUAU_ASSERT(FFlag::LuauSubstitutionReentrant && FFlag::LuauSubstitutionFixMissingFields);
-
         std::vector<GenericTypeDefinition> typeParams;
         std::vector<GenericTypePackDefinition> typePackParams;
 
@@ -195,7 +211,7 @@ void Module::clonePublicInterface(NotNull<BuiltinTypes> builtinTypes, InternalEr
     TxnLog log;
     ClonePublicInterface clonePublicInterface{&log, builtinTypes, this};
 
-    if (FFlag::LuauClonePublicInterfaceLess)
+    if (FFlag::LuauClonePublicInterfaceLess2)
         returnType = clonePublicInterface.cloneTypePack(returnType);
     else
         returnType = clone(returnType, interfaceTypes, cloneState);
@@ -203,7 +219,7 @@ void Module::clonePublicInterface(NotNull<BuiltinTypes> builtinTypes, InternalEr
     moduleScope->returnType = returnType;
     if (varargPack)
     {
-        if (FFlag::LuauClonePublicInterfaceLess)
+        if (FFlag::LuauClonePublicInterfaceLess2)
             varargPack = clonePublicInterface.cloneTypePack(*varargPack);
         else
             varargPack = clone(*varargPack, interfaceTypes, cloneState);
@@ -212,7 +228,7 @@ void Module::clonePublicInterface(NotNull<BuiltinTypes> builtinTypes, InternalEr
 
     for (auto& [name, tf] : moduleScope->exportedTypeBindings)
     {
-        if (FFlag::LuauClonePublicInterfaceLess)
+        if (FFlag::LuauClonePublicInterfaceLess2)
             tf = clonePublicInterface.cloneTypeFun(tf);
         else
             tf = clone(tf, interfaceTypes, cloneState);
@@ -220,21 +236,15 @@ void Module::clonePublicInterface(NotNull<BuiltinTypes> builtinTypes, InternalEr
 
     for (auto& [name, ty] : declaredGlobals)
     {
-        if (FFlag::LuauClonePublicInterfaceLess)
+        if (FFlag::LuauClonePublicInterfaceLess2)
             ty = clonePublicInterface.cloneType(ty);
         else
             ty = clone(ty, interfaceTypes, cloneState);
     }
 
     // Copy external stuff over to Module itself
-    if (FFlag::LuauScopelessModule)
-    {
-        this->returnType = moduleScope->returnType;
-        this->exportedTypeBindings = std::move(moduleScope->exportedTypeBindings);
-    }
-
-    freeze(internalTypes);
-    freeze(interfaceTypes);
+    this->returnType = moduleScope->returnType;
+    this->exportedTypeBindings = moduleScope->exportedTypeBindings;
 }
 
 bool Module::hasModuleScope() const

@@ -184,27 +184,27 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "exhaustive_toString_of_cyclic_table")
 
 TEST_CASE_FIXTURE(Fixture, "intersection_parenthesized_only_if_needed")
 {
-    auto utv = Type{UnionType{{typeChecker.numberType, typeChecker.stringType}}};
-    auto itv = Type{IntersectionType{{&utv, typeChecker.booleanType}}};
+    auto utv = Type{UnionType{{builtinTypes->numberType, builtinTypes->stringType}}};
+    auto itv = Type{IntersectionType{{&utv, builtinTypes->booleanType}}};
 
     CHECK_EQ(toString(&itv), "(number | string) & boolean");
 }
 
 TEST_CASE_FIXTURE(Fixture, "union_parenthesized_only_if_needed")
 {
-    auto itv = Type{IntersectionType{{typeChecker.numberType, typeChecker.stringType}}};
-    auto utv = Type{UnionType{{&itv, typeChecker.booleanType}}};
+    auto itv = Type{IntersectionType{{builtinTypes->numberType, builtinTypes->stringType}}};
+    auto utv = Type{UnionType{{&itv, builtinTypes->booleanType}}};
 
     CHECK_EQ(toString(&utv), "(number & string) | boolean");
 }
 
 TEST_CASE_FIXTURE(Fixture, "functions_are_always_parenthesized_in_unions_or_intersections")
 {
-    auto stringAndNumberPack = TypePackVar{TypePack{{typeChecker.stringType, typeChecker.numberType}}};
-    auto numberAndStringPack = TypePackVar{TypePack{{typeChecker.numberType, typeChecker.stringType}}};
+    auto stringAndNumberPack = TypePackVar{TypePack{{builtinTypes->stringType, builtinTypes->numberType}}};
+    auto numberAndStringPack = TypePackVar{TypePack{{builtinTypes->numberType, builtinTypes->stringType}}};
 
     auto sn2ns = Type{FunctionType{&stringAndNumberPack, &numberAndStringPack}};
-    auto ns2sn = Type{FunctionType(typeChecker.globalScope->level, &numberAndStringPack, &stringAndNumberPack)};
+    auto ns2sn = Type{FunctionType(frontend.globals.globalScope->level, &numberAndStringPack, &stringAndNumberPack)};
 
     auto utv = Type{UnionType{{&ns2sn, &sn2ns}}};
     auto itv = Type{IntersectionType{{&ns2sn, &sn2ns}}};
@@ -250,7 +250,7 @@ TEST_CASE_FIXTURE(Fixture, "quit_stringifying_table_type_when_length_is_exceeded
 {
     TableType ttv{};
     for (char c : std::string("abcdefghijklmno"))
-        ttv.props[std::string(1, c)] = {typeChecker.numberType};
+        ttv.props[std::string(1, c)] = {builtinTypes->numberType};
 
     Type tv{ttv};
 
@@ -264,7 +264,7 @@ TEST_CASE_FIXTURE(Fixture, "stringifying_table_type_is_still_capped_when_exhaust
 {
     TableType ttv{};
     for (char c : std::string("abcdefg"))
-        ttv.props[std::string(1, c)] = {typeChecker.numberType};
+        ttv.props[std::string(1, c)] = {builtinTypes->numberType};
 
     Type tv{ttv};
 
@@ -339,7 +339,7 @@ TEST_CASE_FIXTURE(Fixture, "stringifying_table_type_correctly_use_matching_table
 {
     TableType ttv{TableState::Sealed, TypeLevel{}};
     for (char c : std::string("abcdefghij"))
-        ttv.props[std::string(1, c)] = {typeChecker.numberType};
+        ttv.props[std::string(1, c)] = {builtinTypes->numberType};
 
     Type tv{ttv};
 
@@ -350,7 +350,7 @@ TEST_CASE_FIXTURE(Fixture, "stringifying_table_type_correctly_use_matching_table
 
 TEST_CASE_FIXTURE(Fixture, "stringifying_cyclic_union_type_bails_early")
 {
-    Type tv{UnionType{{typeChecker.stringType, typeChecker.numberType}}};
+    Type tv{UnionType{{builtinTypes->stringType, builtinTypes->numberType}}};
     UnionType* utv = getMutable<UnionType>(&tv);
     utv->options.push_back(&tv);
     utv->options.push_back(&tv);
@@ -371,11 +371,11 @@ TEST_CASE_FIXTURE(Fixture, "stringifying_cyclic_intersection_type_bails_early")
 TEST_CASE_FIXTURE(Fixture, "stringifying_array_uses_array_syntax")
 {
     TableType ttv{TableState::Sealed, TypeLevel{}};
-    ttv.indexer = TableIndexer{typeChecker.numberType, typeChecker.stringType};
+    ttv.indexer = TableIndexer{builtinTypes->numberType, builtinTypes->stringType};
 
     CHECK_EQ("{string}", toString(Type{ttv}));
 
-    ttv.props["A"] = {typeChecker.numberType};
+    ttv.props["A"] = {builtinTypes->numberType};
     CHECK_EQ("{| [number]: string, A: number |}", toString(Type{ttv}));
 
     ttv.props.clear();
@@ -507,31 +507,31 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "toStringDetailed2")
     CHECK_EQ("{ @metatable { __index: { @metatable {| __index: base |}, child } }, inst }", r.name);
     CHECK(0 == opts.nameMap.types.size());
 
-    const MetatableType* tMeta = get<MetatableType>(tType);
+    const MetatableType* tMeta = get<MetatableType>(follow(tType));
     REQUIRE(tMeta);
 
-    TableType* tMeta2 = getMutable<TableType>(tMeta->metatable);
+    TableType* tMeta2 = getMutable<TableType>(follow(tMeta->metatable));
     REQUIRE(tMeta2);
     REQUIRE(tMeta2->props.count("__index"));
 
-    const MetatableType* tMeta3 = get<MetatableType>(tMeta2->props["__index"].type);
+    const MetatableType* tMeta3 = get<MetatableType>(follow(tMeta2->props["__index"].type()));
     REQUIRE(tMeta3);
 
-    TableType* tMeta4 = getMutable<TableType>(tMeta3->metatable);
+    TableType* tMeta4 = getMutable<TableType>(follow(tMeta3->metatable));
     REQUIRE(tMeta4);
     REQUIRE(tMeta4->props.count("__index"));
 
-    TableType* tMeta5 = getMutable<TableType>(tMeta4->props["__index"].type);
+    TableType* tMeta5 = getMutable<TableType>(follow(tMeta4->props["__index"].type()));
     REQUIRE(tMeta5);
     REQUIRE(tMeta5->props.count("one") > 0);
 
-    TableType* tMeta6 = getMutable<TableType>(tMeta3->table);
+    TableType* tMeta6 = getMutable<TableType>(follow(tMeta3->table));
     REQUIRE(tMeta6);
     REQUIRE(tMeta6->props.count("two") > 0);
 
-    ToStringResult oneResult = toStringDetailed(tMeta5->props["one"].type, opts);
+    ToStringResult oneResult = toStringDetailed(tMeta5->props["one"].type(), opts);
 
-    std::string twoResult = toString(tMeta6->props["two"].type, opts);
+    std::string twoResult = toString(tMeta6->props["two"].type(), opts);
 
     CHECK_EQ("<a>(a) -> number", oneResult.name);
     CHECK_EQ("<b>(b) -> number", twoResult);
@@ -562,15 +562,15 @@ TEST_CASE_FIXTURE(Fixture, "toString_the_boundTo_table_type_contained_within_a_T
     Type tv1{TableType{}};
     TableType* ttv = getMutable<TableType>(&tv1);
     ttv->state = TableState::Sealed;
-    ttv->props["hello"] = {typeChecker.numberType};
-    ttv->props["world"] = {typeChecker.numberType};
+    ttv->props["hello"] = {builtinTypes->numberType};
+    ttv->props["world"] = {builtinTypes->numberType};
 
     TypePackVar tpv1{TypePack{{&tv1}}};
 
     Type tv2{TableType{}};
     TableType* bttv = getMutable<TableType>(&tv2);
     bttv->state = TableState::Free;
-    bttv->props["hello"] = {typeChecker.numberType};
+    bttv->props["hello"] = {builtinTypes->numberType};
     bttv->boundTo = &tv1;
 
     TypePackVar tpv2{TypePack{{&tv2}}};
@@ -786,7 +786,7 @@ TEST_CASE_FIXTURE(Fixture, "toStringNamedFunction_include_self_param")
 
     TypeId parentTy = requireType("foo");
     auto ttv = get<TableType>(follow(parentTy));
-    auto ftv = get<FunctionType>(ttv->props.at("method").type);
+    auto ftv = get<FunctionType>(follow(ttv->props.at("method").type()));
 
     CHECK_EQ("foo:method<a>(self: a, arg: string): ()", toStringNamedFunction("foo:method", *ftv));
 }
@@ -803,19 +803,21 @@ TEST_CASE_FIXTURE(Fixture, "toStringNamedFunction_hide_self_param")
         end
     )");
 
-    TypeId parentTy = requireType("foo");
-    auto ttv = get<TableType>(follow(parentTy));
-    auto ftv = get<FunctionType>(ttv->props.at("method").type);
-
     ToStringOptions opts;
     opts.hideFunctionSelfArgument = true;
+
+    TypeId parentTy = requireType("foo");
+    auto ttv = get<TableType>(follow(parentTy));
+    REQUIRE_MESSAGE(ttv, "Expected a table but got " << toString(parentTy, opts));
+    TypeId methodTy = follow(ttv->props.at("method").type());
+    auto ftv = get<FunctionType>(methodTy);
+    REQUIRE_MESSAGE(ftv, "Expected a function but got " << toString(methodTy, opts));
+
     CHECK_EQ("foo:method<a>(arg: string): ()", toStringNamedFunction("foo:method", *ftv, opts));
 }
 
 TEST_CASE_FIXTURE(Fixture, "tostring_unsee_ttv_if_array")
 {
-    ScopedFastFlag sff("LuauUnseeArrayTtv", true);
-
     CheckResult result = check(R"(
         local x: {string}
         -- This code is constructed very specifically to use the same (by pointer

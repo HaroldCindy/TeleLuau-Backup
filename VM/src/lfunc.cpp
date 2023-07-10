@@ -31,10 +31,10 @@ Proto* luaF_newproto(lua_State* L)
     f->source = NULL;
     f->debugname = NULL;
     f->debuginsn = NULL;
-
-#if LUA_CUSTOM_EXECUTION
+    f->codeentry = NULL;
     f->execdata = NULL;
-#endif
+    f->exectarget = 0;
+    f->typeinfo = NULL;
 
     return f;
 }
@@ -175,6 +175,9 @@ void luaF_freeproto(lua_State* L, Proto* f, lua_Page* page)
         L->global->ecb.destroy(L, f);
     }
 #endif
+
+    if (f->typeinfo)
+        luaM_freearray(L, f->typeinfo, f->numparams + 2, uint8_t, f->memcat);
 
     luaM_freegco(L, f, sizeof(Proto), f->memcat, page);
 }

@@ -171,7 +171,7 @@ void StateDot::visitChildren(TypeId ty, int index)
             return visitChild(*ttv->boundTo, index, "boundTo");
 
         for (const auto& [name, prop] : ttv->props)
-            visitChild(prop.type, index, name.c_str());
+            visitChild(prop.type(), index, name.c_str());
         if (ttv->indexer)
         {
             visitChild(ttv->indexer->indexType, index, "[index]");
@@ -250,13 +250,19 @@ void StateDot::visitChildren(TypeId ty, int index)
         finishNode();
 
         for (const auto& [name, prop] : ctv->props)
-            visitChild(prop.type, index, name.c_str());
+            visitChild(prop.type(), index, name.c_str());
 
         if (ctv->parent)
             visitChild(*ctv->parent, index, "[parent]");
 
         if (ctv->metatable)
             visitChild(*ctv->metatable, index, "[metatable]");
+
+        if (ctv->indexer)
+        {
+            visitChild(ctv->indexer->indexType, index, "[index]");
+            visitChild(ctv->indexer->indexResultType, index, "[value]");
+        }
     }
     else if (const SingletonType* stv = get<SingletonType>(ty))
     {

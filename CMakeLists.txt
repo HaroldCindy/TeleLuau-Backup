@@ -14,9 +14,11 @@ option(LUAU_STATIC_CRT "Link with the static CRT (/MT)" OFF)
 option(LUAU_EXTERN_C "Use extern C for all APIs" OFF)
 option(LUAU_NATIVE "Enable support for native code generation" OFF)
 
+cmake_policy(SET CMP0054 NEW)
+cmake_policy(SET CMP0091 NEW)
+
 if(LUAU_STATIC_CRT)
     cmake_minimum_required(VERSION 3.15)
-    cmake_policy(SET CMP0091 NEW)
     set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
@@ -34,12 +36,14 @@ if(LUAU_BUILD_CLI)
     add_executable(Luau.Analyze.CLI)
     add_executable(Luau.Ast.CLI)
     add_executable(Luau.Reduce.CLI)
+    add_executable(Luau.Compile.CLI)
 
     # This also adds target `name` on Linux/macOS and `name.exe` on Windows
     set_target_properties(Luau.Repl.CLI PROPERTIES OUTPUT_NAME luau)
     set_target_properties(Luau.Analyze.CLI PROPERTIES OUTPUT_NAME luau-analyze)
     set_target_properties(Luau.Ast.CLI PROPERTIES OUTPUT_NAME luau-ast)
     set_target_properties(Luau.Reduce.CLI PROPERTIES OUTPUT_NAME luau-reduce)
+    set_target_properties(Luau.Compile.CLI PROPERTIES OUTPUT_NAME luau-compile)
 endif()
 
 if(LUAU_BUILD_TESTS)
@@ -88,9 +92,15 @@ set(LUAU_OPTIONS)
 
 if(MSVC)
     list(APPEND LUAU_OPTIONS /D_CRT_SECURE_NO_WARNINGS) # We need to use the portable CRT functions.
-    list(APPEND LUAU_OPTIONS /MP) # Distribute single project compilation across multiple cores
+    list(APPEND LUAU_OPTIONS "/we4018") # Signed/unsigned mismatch
+    list(APPEND LUAU_OPTIONS "/we4388") # Also signed/unsigned mismatch
 else()
     list(APPEND LUAU_OPTIONS -Wall) # All warnings
+    list(APPEND LUAU_OPTIONS -Wsign-compare) # This looks to be included in -Wall for GCC but not clang
+endif()
+
+if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    list(APPEND LUAU_OPTIONS /MP) # Distribute single project compilation across multiple cores
 endif()
 
 if (CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
@@ -115,7 +125,7 @@ endif()
 
 set(ISOCLINE_OPTIONS)
 
-if (NOT MSVC)
+if (NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
     list(APPEND ISOCLINE_OPTIONS -Wno-unused-function)
 endif()
 
@@ -135,9 +145,12 @@ endif()
 
 if(LUAU_NATIVE)
     target_compile_definitions(Luau.VM PUBLIC LUA_CUSTOM_EXECUTION=1)
+    if(LUAU_EXTERN_C)
+        target_compile_definitions(Luau.CodeGen PUBLIC LUACODEGEN_API=extern\"C\")
+    endif()
 endif()
 
-if (MSVC AND MSVC_VERSION GREATER_EQUAL 1924)
+if (CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND MSVC_VERSION GREATER_EQUAL 1924)
     # disable partial redundancy elimination which regresses interpreter codegen substantially in VS2022:
     # https://developercommunity.visualstudio.com/t/performance-regression-on-a-complex-interpreter-lo/1631863
     set_source_files_properties(VM/src/lvmexecute.cpp PROPERTIES COMPILE_FLAGS /d2ssa-pre-)
@@ -172,8 +185,10 @@ endif()
 
 if(LUAU_BUILD_CLI)
     target_compile_options(Luau.Repl.CLI PRIVATE ${LUAU_OPTIONS})
+    target_compile_options(Luau.Reduce.CLI PRIVATE ${LUAU_OPTIONS})
     target_compile_options(Luau.Analyze.CLI PRIVATE ${LUAU_OPTIONS})
     target_compile_options(Luau.Ast.CLI PRIVATE ${LUAU_OPTIONS})
+    target_compile_options(Luau.Compile.CLI PRIVATE ${LUAU_OPTIONS})
 
     target_include_directories(Luau.Repl.CLI PRIVATE extern extern/isocline/include)
 
@@ -183,6 +198,7 @@ if(LUAU_BUILD_CLI)
         find_library(LIBPTHREAD pthread)
         if (LIBPTHREAD)
             target_link_libraries(Luau.Repl.CLI PRIVATE pthread)
+            target_link_libraries(Luau.Analyze.CLI PRIVATE pthread)
         endif()
     endif()
 
@@ -193,6 +209,8 @@ if(LUAU_BUILD_CLI)
     target_compile_features(Luau.Reduce.CLI PRIVATE cxx_std_17)
     target_include_directories(Luau.Reduce.CLI PUBLIC Reduce/include)
     target_link_libraries(Luau.Reduce.CLI PRIVATE Luau.Common Luau.Ast Luau.Analysis)
+
+    target_link_libraries(Luau.Compile.CLI PRIVATE Luau.Compiler Luau.VM Luau.CodeGen)
 endif()
 
 if(LUAU_BUILD_TESTS)

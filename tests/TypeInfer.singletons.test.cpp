@@ -9,6 +9,20 @@ using namespace Luau;
 
 TEST_SUITE_BEGIN("TypeSingletons");
 
+TEST_CASE_FIXTURE(Fixture, "function_args_infer_singletons")
+{
+    CheckResult result = check(R"(
+--!strict
+type Phase = "A" | "B" | "C"
+local function f(e : Phase) : number
+    return 0
+end
+local e = f("B")
+)");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
 TEST_CASE_FIXTURE(Fixture, "bool_singletons")
 {
     CheckResult result = check(R"(
@@ -131,8 +145,16 @@ TEST_CASE_FIXTURE(Fixture, "overloaded_function_call_with_singletons_mismatch")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(2, result);
-    CHECK_EQ("Type 'number' could not be converted into 'string'", toString(result.errors[0]));
-    CHECK_EQ("Other overloads are also not viable: (false, number) -> ()", toString(result.errors[1]));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        CHECK_EQ("None of the overloads for function that accept 2 arguments are compatible.", toString(result.errors[0]));
+        CHECK_EQ("Available overloads: (true, string) -> (); and (false, number) -> ()", toString(result.errors[1]));
+    }
+    else
+    {
+        CHECK_EQ("Type 'number' could not be converted into 'string'", toString(result.errors[0]));
+        CHECK_EQ("Other overloads are also not viable: (false, number) -> ()", toString(result.errors[1]));
+    }
 }
 
 TEST_CASE_FIXTURE(Fixture, "enums_using_singletons")
@@ -341,9 +363,9 @@ TEST_CASE_FIXTURE(Fixture, "parametric_tagged_union_alias")
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
-    const std::string expectedError = "Type '{ result: string, success: false }' could not be converted into 'Err<number> | Ok<string>'\n"
+    const std::string expectedError = "Type 'a' could not be converted into 'Err<number> | Ok<string>'\n"
                                       "caused by:\n"
-                                      "  None of the union options are compatible. For example: Table type '{ result: string, success: false }'"
+                                      "  None of the union options are compatible. For example: Table type 'a'"
                                       " not compatible with type 'Err<number>' because the former is missing field 'error'";
 
     CHECK(toString(result.errors[0]) == expectedError);
@@ -500,8 +522,6 @@ TEST_CASE_FIXTURE(Fixture, "taking_the_length_of_union_of_string_singleton")
 
 TEST_CASE_FIXTURE(Fixture, "no_widening_from_callsites")
 {
-    ScopedFastFlag sff{"LuauReturnsFromCallsitesAreNotWidened", true};
-
     CheckResult result = check(R"(
         type Direction = "North" | "East" | "West" | "South"
 

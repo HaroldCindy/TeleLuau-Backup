@@ -15,6 +15,12 @@ namespace Luau
 struct TxnLog;
 struct TypeArena;
 
+enum class ValueContext
+{
+    LValue,
+    RValue
+};
+
 using ScopePtr = std::shared_ptr<struct Scope>;
 
 std::optional<TypeId> findMetatableEntry(
@@ -27,7 +33,8 @@ std::pair<size_t, std::optional<size_t>> getParameterExtents(const TxnLog* log, 
 
 // Extend the provided pack to at least `length` types.
 // Returns a temporary TypePack that contains those types plus a tail.
-TypePack extendTypePack(TypeArena& arena, NotNull<BuiltinTypes> builtinTypes, TypePackId pack, size_t length);
+TypePack extendTypePack(
+    TypeArena& arena, NotNull<BuiltinTypes> builtinTypes, TypePackId pack, size_t length, std::vector<std::optional<TypeId>> overrides = {});
 
 /**
  * Reduces a union by decomposing to the any/error type if it appears in the
@@ -47,5 +54,23 @@ std::vector<TypeId> reduceUnion(const std::vector<TypeId>& types);
  * @returns a type with nil removed, or nil itself if that were the only option.
  */
 TypeId stripNil(NotNull<BuiltinTypes> builtinTypes, TypeArena& arena, TypeId ty);
+
+template<typename T, typename Ty>
+const T* get(std::optional<Ty> ty)
+{
+    if (ty)
+        return get<T>(*ty);
+    else
+        return nullptr;
+}
+
+template<typename Ty>
+std::optional<Ty> follow(std::optional<Ty> ty)
+{
+    if (ty)
+        return follow(*ty);
+    else
+        return std::nullopt;
+}
 
 } // namespace Luau

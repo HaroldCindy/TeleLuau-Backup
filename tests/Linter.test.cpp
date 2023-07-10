@@ -35,9 +35,9 @@ TEST_CASE_FIXTURE(Fixture, "UnknownGlobal")
 TEST_CASE_FIXTURE(Fixture, "DeprecatedGlobal")
 {
     // Normally this would be defined externally, so hack it in for testing
-    addGlobalBinding(frontend, "Wait", Binding{typeChecker.anyType, {}, true, "wait", "@test/global/Wait"});
+    addGlobalBinding(frontend.globals, "Wait", Binding{builtinTypes->anyType, {}, true, "wait", "@test/global/Wait"});
 
-    LintResult result = lintTyped("Wait(5)");
+    LintResult result = lint("Wait(5)");
 
     REQUIRE(1 == result.warnings.size());
     CHECK_EQ(result.warnings[0].text, "Global 'Wait' is deprecated, use 'wait' instead");
@@ -47,9 +47,9 @@ TEST_CASE_FIXTURE(Fixture, "DeprecatedGlobalNoReplacement")
 {
     // Normally this would be defined externally, so hack it in for testing
     const char* deprecationReplacementString = "";
-    addGlobalBinding(frontend, "Version", Binding{typeChecker.anyType, {}, true, deprecationReplacementString});
+    addGlobalBinding(frontend.globals, "Version", Binding{builtinTypes->anyType, {}, true, deprecationReplacementString});
 
-    LintResult result = lintTyped("Version()");
+    LintResult result = lint("Version()");
 
     REQUIRE(1 == result.warnings.size());
     CHECK_EQ(result.warnings[0].text, "Global 'Version' is deprecated");
@@ -171,7 +171,6 @@ return bar()
 
 TEST_CASE_FIXTURE(Fixture, "GlobalAsLocalMultiFx")
 {
-    ScopedFastFlag sff{"LuauLintGlobalNeverReadBeforeWritten", true};
     LintResult result = lint(R"(
 function bar()
     foo = 6
@@ -192,7 +191,6 @@ return bar() + baz()
 
 TEST_CASE_FIXTURE(Fixture, "GlobalAsLocalMultiFxWithRead")
 {
-    ScopedFastFlag sff{"LuauLintGlobalNeverReadBeforeWritten", true};
     LintResult result = lint(R"(
 function bar()
     foo = 6
@@ -216,7 +214,6 @@ return bar() + baz() + read()
 
 TEST_CASE_FIXTURE(Fixture, "GlobalAsLocalWithConditional")
 {
-    ScopedFastFlag sff{"LuauLintGlobalNeverReadBeforeWritten", true};
     LintResult result = lint(R"(
 function bar()
     if true then foo = 6 end
@@ -236,7 +233,6 @@ return bar() + baz()
 
 TEST_CASE_FIXTURE(Fixture, "GlobalAsLocal3WithConditionalRead")
 {
-    ScopedFastFlag sff{"LuauLintGlobalNeverReadBeforeWritten", true};
     LintResult result = lint(R"(
 function bar()
     foo = 6
@@ -260,7 +256,6 @@ return bar() + baz() + read()
 
 TEST_CASE_FIXTURE(Fixture, "GlobalAsLocalInnerRead")
 {
-    ScopedFastFlag sff{"LuauLintGlobalNeverReadBeforeWritten", true};
     LintResult result = lint(R"(
 function foo()
    local f = function() return bar end
@@ -378,7 +373,7 @@ return bar()
 TEST_CASE_FIXTURE(Fixture, "ImportUnused")
 {
     // Normally this would be defined externally, so hack it in for testing
-    addGlobalBinding(frontend, "game", typeChecker.anyType, "@test");
+    addGlobalBinding(frontend.globals, "game", builtinTypes->anyType, "@test");
 
     LintResult result = lint(R"(
 local Roact = require(game.Packages.Roact)
@@ -609,16 +604,16 @@ return foo1
 
 TEST_CASE_FIXTURE(Fixture, "UnknownType")
 {
-    unfreeze(typeChecker.globalTypes);
+    unfreeze(frontend.globals.globalTypes);
     TableType::Props instanceProps{
-        {"ClassName", {typeChecker.anyType}},
+        {"ClassName", {builtinTypes->anyType}},
     };
 
-    TableType instanceTable{instanceProps, std::nullopt, typeChecker.globalScope->level, Luau::TableState::Sealed};
-    TypeId instanceType = typeChecker.globalTypes.addType(instanceTable);
+    TableType instanceTable{instanceProps, std::nullopt, frontend.globals.globalScope->level, Luau::TableState::Sealed};
+    TypeId instanceType = frontend.globals.globalTypes.addType(instanceTable);
     TypeFun instanceTypeFun{{}, instanceType};
 
-    typeChecker.globalScope->exportedTypeBindings["Part"] = instanceTypeFun;
+    frontend.globals.globalScope->exportedTypeBindings["Part"] = instanceTypeFun;
 
     LintResult result = lint(R"(
 local game = ...
@@ -738,6 +733,7 @@ end
 TEST_CASE_FIXTURE(Fixture, "ImplicitReturn")
 {
     LintResult result = lint(R"(
+--!nonstrict
 function f1(a)
     if not a then
         return 5
@@ -794,20 +790,21 @@ return f1,f2,f3,f4,f5,f6,f7
 )");
 
     REQUIRE(3 == result.warnings.size());
-    CHECK_EQ(result.warnings[0].location.begin.line, 4);
+    CHECK_EQ(result.warnings[0].location.begin.line, 5);
     CHECK_EQ(result.warnings[0].text,
-        "Function 'f1' can implicitly return no values even though there's an explicit return at line 4; add explicit return to silence");
-    CHECK_EQ(result.warnings[1].location.begin.line, 28);
+        "Function 'f1' can implicitly return no values even though there's an explicit return at line 5; add explicit return to silence");
+    CHECK_EQ(result.warnings[1].location.begin.line, 29);
     CHECK_EQ(result.warnings[1].text,
-        "Function 'f4' can implicitly return no values even though there's an explicit return at line 25; add explicit return to silence");
-    CHECK_EQ(result.warnings[2].location.begin.line, 44);
+        "Function 'f4' can implicitly return no values even though there's an explicit return at line 26; add explicit return to silence");
+    CHECK_EQ(result.warnings[2].location.begin.line, 45);
     CHECK_EQ(result.warnings[2].text,
-        "Function can implicitly return no values even though there's an explicit return at line 44; add explicit return to silence");
+        "Function can implicitly return no values even though there's an explicit return at line 45; add explicit return to silence");
 }
 
 TEST_CASE_FIXTURE(Fixture, "ImplicitReturnInfiniteLoop")
 {
     LintResult result = lint(R"(
+--!nonstrict
 function f1(a)
     while true do
         if math.random() > 0.5 then
@@ -850,12 +847,12 @@ return f1,f2,f3,f4
 )");
 
     REQUIRE(2 == result.warnings.size());
-    CHECK_EQ(result.warnings[0].location.begin.line, 25);
+    CHECK_EQ(result.warnings[0].location.begin.line, 26);
     CHECK_EQ(result.warnings[0].text,
-        "Function 'f3' can implicitly return no values even though there's an explicit return at line 21; add explicit return to silence");
-    CHECK_EQ(result.warnings[1].location.begin.line, 36);
+        "Function 'f3' can implicitly return no values even though there's an explicit return at line 22; add explicit return to silence");
+    CHECK_EQ(result.warnings[1].location.begin.line, 37);
     CHECK_EQ(result.warnings[1].text,
-        "Function 'f4' can implicitly return no values even though there's an explicit return at line 32; add explicit return to silence");
+        "Function 'f4' can implicitly return no values even though there's an explicit return at line 33; add explicit return to silence");
 }
 
 TEST_CASE_FIXTURE(Fixture, "TypeAnnotationsShouldNotProduceWarnings")
@@ -1169,7 +1166,7 @@ os.date("!*t")
 
 TEST_CASE_FIXTURE(Fixture, "FormatStringTyped")
 {
-    LintResult result = lintTyped(R"~(
+    LintResult result = lint(R"~(
 local s: string, nons = ...
 
 string.match(s, "[]")
@@ -1275,12 +1272,12 @@ TEST_CASE_FIXTURE(Fixture, "no_spurious_warning_after_a_function_type_alias")
 TEST_CASE_FIXTURE(Fixture, "use_all_parent_scopes_for_globals")
 {
     ScopePtr testScope = frontend.addEnvironment("Test");
-    unfreeze(typeChecker.globalTypes);
-    loadDefinitionFile(frontend.typeChecker, testScope, R"(
+    unfreeze(frontend.globals.globalTypes);
+    frontend.loadDefinitionFile(frontend.globals, testScope, R"(
         declare Foo: number
     )",
-        "@test");
-    freeze(typeChecker.globalTypes);
+        "@test", /* captureComments */ false);
+    freeze(frontend.globals.globalTypes);
 
     fileResolver.environments["A"] = "Test";
 
@@ -1290,7 +1287,7 @@ TEST_CASE_FIXTURE(Fixture, "use_all_parent_scopes_for_globals")
         local _bar: typeof(os.clock) = os.clock
     )";
 
-    LintResult result = frontend.lint("A");
+    LintResult result = lintModule("A");
 
     REQUIRE(0 == result.warnings.size());
 }
@@ -1445,46 +1442,81 @@ TEST_CASE_FIXTURE(Fixture, "LintHygieneUAF")
     REQUIRE(12 == result.warnings.size());
 }
 
-TEST_CASE_FIXTURE(Fixture, "DeprecatedApi")
+TEST_CASE_FIXTURE(BuiltinsFixture, "DeprecatedApiTyped")
 {
-    unfreeze(typeChecker.globalTypes);
-    TypeId instanceType = typeChecker.globalTypes.addType(ClassType{"Instance", {}, std::nullopt, std::nullopt, {}, {}, "Test"});
+    unfreeze(frontend.globals.globalTypes);
+    TypeId instanceType = frontend.globals.globalTypes.addType(ClassType{"Instance", {}, std::nullopt, std::nullopt, {}, {}, "Test"});
     persist(instanceType);
-    typeChecker.globalScope->exportedTypeBindings["Instance"] = TypeFun{{}, instanceType};
+    frontend.globals.globalScope->exportedTypeBindings["Instance"] = TypeFun{{}, instanceType};
 
     getMutable<ClassType>(instanceType)->props = {
-        {"Name", {typeChecker.stringType}},
-        {"DataCost", {typeChecker.numberType, /* deprecated= */ true}},
-        {"Wait", {typeChecker.anyType, /* deprecated= */ true}},
+        {"Name", {builtinTypes->stringType}},
+        {"DataCost", {builtinTypes->numberType, /* deprecated= */ true}},
+        {"Wait", {builtinTypes->anyType, /* deprecated= */ true}},
     };
 
-    TypeId colorType = typeChecker.globalTypes.addType(TableType{{}, std::nullopt, typeChecker.globalScope->level, Luau::TableState::Sealed});
+    TypeId colorType =
+        frontend.globals.globalTypes.addType(TableType{{}, std::nullopt, frontend.globals.globalScope->level, Luau::TableState::Sealed});
 
-    getMutable<TableType>(colorType)->props = {{"toHSV", {typeChecker.anyType, /* deprecated= */ true, "Color3:ToHSV"}}};
+    getMutable<TableType>(colorType)->props = {{"toHSV", {builtinTypes->anyType, /* deprecated= */ true, "Color3:ToHSV"}}};
 
-    addGlobalBinding(frontend, "Color3", Binding{colorType, {}});
+    addGlobalBinding(frontend.globals, "Color3", Binding{colorType, {}});
 
-    freeze(typeChecker.globalTypes);
+    if (TableType* ttv = getMutable<TableType>(getGlobalBinding(frontend.globals, "table")))
+    {
+        ttv->props["foreach"].deprecated = true;
+        ttv->props["getn"].deprecated = true;
+        ttv->props["getn"].deprecatedSuggestion = "#";
+    }
 
-    LintResult result = lintTyped(R"(
+    freeze(frontend.globals.globalTypes);
+
+    LintResult result = lint(R"(
 return function (i: Instance)
     i:Wait(1.0)
     print(i.Name)
     print(Color3.toHSV())
     print(Color3.doesntexist, i.doesntexist) -- type error, but this verifies we correctly handle non-existent members
+    print(table.getn({}))
+    table.foreach({}, function() end)
+    print(table.nogetn()) -- verify that we correctly handle non-existent members
     return i.DataCost
 end
 )");
 
-    REQUIRE(3 == result.warnings.size());
+    REQUIRE(5 == result.warnings.size());
     CHECK_EQ(result.warnings[0].text, "Member 'Instance.Wait' is deprecated");
     CHECK_EQ(result.warnings[1].text, "Member 'toHSV' is deprecated, use 'Color3:ToHSV' instead");
-    CHECK_EQ(result.warnings[2].text, "Member 'Instance.DataCost' is deprecated");
+    CHECK_EQ(result.warnings[2].text, "Member 'table.getn' is deprecated, use '#' instead");
+    CHECK_EQ(result.warnings[3].text, "Member 'table.foreach' is deprecated");
+    CHECK_EQ(result.warnings[4].text, "Member 'Instance.DataCost' is deprecated");
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "DeprecatedApiUntyped")
+{
+    if (TableType* ttv = getMutable<TableType>(getGlobalBinding(frontend.globals, "table")))
+    {
+        ttv->props["foreach"].deprecated = true;
+        ttv->props["getn"].deprecated = true;
+        ttv->props["getn"].deprecatedSuggestion = "#";
+    }
+
+    LintResult result = lint(R"(
+return function ()
+    print(table.getn({}))
+    table.foreach({}, function() end)
+    print(table.nogetn()) -- verify that we correctly handle non-existent members
+end
+)");
+
+    REQUIRE(2 == result.warnings.size());
+    CHECK_EQ(result.warnings[0].text, "Member 'table.getn' is deprecated, use '#' instead");
+    CHECK_EQ(result.warnings[1].text, "Member 'table.foreach' is deprecated");
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "TableOperations")
 {
-    LintResult result = lintTyped(R"(
+    LintResult result = lint(R"(
 local t = {}
 local tt = {}
 
@@ -1691,8 +1723,6 @@ TEST_CASE_FIXTURE(Fixture, "WrongCommentOptimize")
 
 TEST_CASE_FIXTURE(Fixture, "TestStringInterpolation")
 {
-    ScopedFastFlag sff{"LuauInterpolatedStringBaseSupport", true};
-
     LintResult result = lint(R"(
         --!nocheck
         local _ = `unknown {foo}`
@@ -1711,23 +1741,6 @@ local _ = 0x10000000000000000
     REQUIRE(2 == result.warnings.size());
     CHECK_EQ(result.warnings[0].text, "Binary number literal exceeded available precision and has been truncated to 2^64");
     CHECK_EQ(result.warnings[1].text, "Hexadecimal number literal exceeded available precision and has been truncated to 2^64");
-}
-
-// TODO: remove with FFlagLuauErrorDoubleHexPrefix
-TEST_CASE_FIXTURE(Fixture, "IntegerParsingDoublePrefix")
-{
-    ScopedFastFlag luauErrorDoubleHexPrefix{"LuauErrorDoubleHexPrefix", false}; // Lint will be available until we start rejecting code
-
-    LintResult result = lint(R"(
-local _ = 0x0x123
-local _ = 0x0xffffffffffffffffffffffffffffffffff
-)");
-
-    REQUIRE(2 == result.warnings.size());
-    CHECK_EQ(result.warnings[0].text,
-        "Hexadecimal number literal has a double prefix, which will fail to parse in the future; remove the extra 0x to fix");
-    CHECK_EQ(result.warnings[1].text,
-        "Hexadecimal number literal has a double prefix, which will fail to parse in the future; remove the extra 0x to fix");
 }
 
 TEST_CASE_FIXTURE(Fixture, "ComparisonPrecedence")

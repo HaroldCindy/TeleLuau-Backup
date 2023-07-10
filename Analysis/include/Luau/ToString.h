@@ -99,10 +99,7 @@ inline std::string toString(const Constraint& c, ToStringOptions&& opts)
     return toString(c, opts);
 }
 
-inline std::string toString(const Constraint& c)
-{
-    return toString(c, ToStringOptions{});
-}
+std::string toString(const Constraint& c);
 
 std::string toString(const Type& tv, ToStringOptions& opts);
 std::string toString(const TypePackVar& tp, ToStringOptions& opts);
@@ -132,7 +129,9 @@ std::optional<std::string> getFunctionNameAsString(const AstExpr& expr);
 // It could be useful to see the text representation of a type during a debugging session instead of exploring the content of the class
 // These functions will dump the type to stdout and can be evaluated in Watch/Immediate windows or as gdb/lldb expression
 std::string dump(TypeId ty);
+std::string dump(const std::optional<TypeId>& ty);
 std::string dump(TypePackId ty);
+std::string dump(const std::optional<TypePackId>& ty);
 std::string dump(const Constraint& c);
 
 std::string dump(const std::shared_ptr<Scope>& scope, const char* name);

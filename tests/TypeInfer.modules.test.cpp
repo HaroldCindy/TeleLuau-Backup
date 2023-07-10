@@ -11,7 +11,7 @@
 #include "doctest.h"
 
 LUAU_FASTFLAG(LuauInstantiateInSubtyping)
-LUAU_FASTFLAG(LuauTypeMismatchInvarianceInError)
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
 
 using namespace Luau;
 
@@ -39,7 +39,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "dcr_require_basic")
     CheckResult bResult = frontend.check("game/B");
     LUAU_REQUIRE_NO_ERRORS(bResult);
 
-    ModulePtr b = frontend.moduleResolver.modules["game/B"];
+    ModulePtr b = frontend.moduleResolver.getModule("game/B");
     REQUIRE(b != nullptr);
     std::optional<TypeId> bType = requireType(b, "b");
     REQUIRE(bType);
@@ -71,7 +71,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "require")
     dumpErrors(bResult);
     LUAU_REQUIRE_NO_ERRORS(bResult);
 
-    ModulePtr b = frontend.moduleResolver.modules["game/B"];
+    ModulePtr b = frontend.moduleResolver.getModule("game/B");
 
     REQUIRE(b != nullptr);
 
@@ -101,7 +101,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "require_types")
     CheckResult bResult = frontend.check("workspace/B");
     LUAU_REQUIRE_NO_ERRORS(bResult);
 
-    ModulePtr b = frontend.moduleResolver.modules["workspace/B"];
+    ModulePtr b = frontend.moduleResolver.getModule("workspace/B");
     REQUIRE(b != nullptr);
 
     TypeId hType = requireType(b, "h");
@@ -166,8 +166,8 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "require_module_that_does_not_export")
     frontend.check("game/Workspace/A");
     frontend.check("game/Workspace/B");
 
-    ModulePtr aModule = frontend.moduleResolver.modules["game/Workspace/A"];
-    ModulePtr bModule = frontend.moduleResolver.modules["game/Workspace/B"];
+    ModulePtr aModule = frontend.moduleResolver.getModule("game/Workspace/A");
+    ModulePtr bModule = frontend.moduleResolver.getModule("game/Workspace/B");
 
     CHECK(aModule->errors.empty());
     REQUIRE_EQ(1, bModule->errors.size());
@@ -409,14 +409,9 @@ local b: B.T = a
     CheckResult result = frontend.check("game/C");
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'T' from 'game/A' could not be converted into 'T' from 'game/B'
+    CHECK_EQ(toString(result.errors[0]), R"(Type 'T' from 'game/A' could not be converted into 'T' from 'game/B'
 caused by:
   Property 'x' is not compatible. Type 'number' could not be converted into 'string' in an invariant context)");
-    else
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'T' from 'game/A' could not be converted into 'T' from 'game/B'
-caused by:
-  Property 'x' is not compatible. Type 'number' could not be converted into 'string')");
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "module_type_conflict_instantiated")
@@ -448,14 +443,9 @@ local b: B.T = a
     CheckResult result = frontend.check("game/D");
     LUAU_REQUIRE_ERROR_COUNT(1, result);
 
-    if (FFlag::LuauTypeMismatchInvarianceInError)
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'T' from 'game/B' could not be converted into 'T' from 'game/C'
+    CHECK_EQ(toString(result.errors[0]), R"(Type 'T' from 'game/B' could not be converted into 'T' from 'game/C'
 caused by:
   Property 'x' is not compatible. Type 'number' could not be converted into 'string' in an invariant context)");
-    else
-        CHECK_EQ(toString(result.errors[0]), R"(Type 'T' from 'game/B' could not be converted into 'T' from 'game/C'
-caused by:
-  Property 'x' is not compatible. Type 'number' could not be converted into 'string')");
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "constrained_anyification_clone_immutable_types")
@@ -475,13 +465,42 @@ return l0
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "fuzz_anyify_variadic_return_must_follow")
 {
-    ScopedFastFlag luauTypeInferMissingFollows{"LuauTypeInferMissingFollows", true};
-
     CheckResult result = check(R"(
 return unpack(l0[_])
     )");
 
     LUAU_REQUIRE_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "check_imported_module_names")
+{
+    ScopedFastFlag sff{"LuauTinyControlFlowAnalysis", true};
+
+    fileResolver.source["game/A"] = R"(
+return function(...) end
+    )";
+
+    fileResolver.source["game/B"] = R"(
+local l0 = require(game.A)
+return l0
+    )";
+
+    CheckResult result = check(R"(
+local l0 = require(game.B)
+if true then
+    local l1 = require(game.A)
+end
+return l0
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    ModulePtr mod = getMainModule();
+    REQUIRE(mod);
+
+    REQUIRE(mod->scopes.size() == 4);
+    CHECK(mod->scopes[0].second->importedModules["l0"] == "game/B");
+    CHECK(mod->scopes[3].second->importedModules["l1"] == "game/A");
 }
 
 TEST_SUITE_END();

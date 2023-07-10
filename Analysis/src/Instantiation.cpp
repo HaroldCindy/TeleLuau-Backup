@@ -4,8 +4,6 @@
 #include "Luau/TxnLog.h"
 #include "Luau/TypeArena.h"
 
-LUAU_FASTFLAG(LuauClassTypeVarsInSubstitution)
-
 namespace Luau
 {
 
@@ -13,7 +11,7 @@ bool Instantiation::isDirty(TypeId ty)
 {
     if (const FunctionType* ftv = log->getMutable<FunctionType>(ty))
     {
-        if (ftv->hasNoGenerics)
+        if (ftv->hasNoFreeOrGenericTypes)
             return false;
 
         return true;
@@ -33,7 +31,7 @@ bool Instantiation::ignoreChildren(TypeId ty)
 {
     if (log->getMutable<FunctionType>(ty))
         return true;
-    else if (FFlag::LuauClassTypeVarsInSubstitution && get<ClassType>(ty))
+    else if (get<ClassType>(ty))
         return true;
     else
         return false;
@@ -47,6 +45,7 @@ TypeId Instantiation::clean(TypeId ty)
     FunctionType clone = FunctionType{level, scope, ftv->argTypes, ftv->retTypes, ftv->definition, ftv->hasSelf};
     clone.magicFunction = ftv->magicFunction;
     clone.dcrMagicFunction = ftv->dcrMagicFunction;
+    clone.dcrMagicRefinement = ftv->dcrMagicRefinement;
     clone.tags = ftv->tags;
     clone.argNames = ftv->argNames;
     TypeId result = addType(std::move(clone));
@@ -73,7 +72,7 @@ bool ReplaceGenerics::ignoreChildren(TypeId ty)
 {
     if (const FunctionType* ftv = log->getMutable<FunctionType>(ty))
     {
-        if (ftv->hasNoGenerics)
+        if (ftv->hasNoFreeOrGenericTypes)
             return true;
 
         // We aren't recursing in the case of a generic function which
@@ -83,7 +82,7 @@ bool ReplaceGenerics::ignoreChildren(TypeId ty)
         // whenever we quantify, so the vectors overlap if and only if they are equal.
         return (!generics.empty() || !genericPacks.empty()) && (ftv->generics == generics) && (ftv->genericPacks == genericPacks);
     }
-    else if (FFlag::LuauClassTypeVarsInSubstitution && get<ClassType>(ty))
+    else if (get<ClassType>(ty))
         return true;
     else
     {
@@ -126,7 +125,7 @@ TypeId ReplaceGenerics::clean(TypeId ty)
 TypePackId ReplaceGenerics::clean(TypePackId tp)
 {
     LUAU_ASSERT(isDirty(tp));
-    return addTypePack(TypePackVar(FreeTypePack{level}));
+    return addTypePack(TypePackVar(FreeTypePack{scope, level}));
 }
 
 } // namespace Luau
