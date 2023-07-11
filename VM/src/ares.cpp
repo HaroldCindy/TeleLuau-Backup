@@ -141,6 +141,10 @@ static const lua_Unsigned kMaxComplexity = 10000;
 #define eris_savestackidx(L, p) ((p) - (L)->stack)
 #define eris_restorestackidx(L, n) ((L)->stack + (n))
 
+/* CodeGen doesn't live in Luau.VM, so we need to dynamically pass a compile
+ * callback so that we aren't tightly bound to Luau.CodeGen at compile time. */
+static void (*sAresCodeGenCompile)(lua_State *, int) = nullptr;
+
 /*
 ** ============================================================================
 ** Language strings for errors.
@@ -241,6 +245,7 @@ typedef struct Info {
   lua_Unsigned maxComplexity;
   bool generatePath;
   bool persisting;
+  bool anyProtoNative;
   /* Which one it really is will always be clear from the context. */
   union {
     PersistInfo pi;
@@ -1422,6 +1427,8 @@ p_proto(Info *info) {                                            /* ... proto */
   const Proto *p = (Proto*)lua_touserdata(info->L, -1);
   eris_checkstack(info->L, 3);
 
+  info->anyProtoNative |= p->execdata != nullptr;
+
   /* Write function source code */
   pushtstring(info->L, p->source);
   persist(info);
@@ -1735,7 +1742,7 @@ p_closure(Info *info) {                              /* perms reftbl ... func */
      * underlying C function by pushing its pointer as a lightuserdata.
      *
      * Note that this isn't foolproof as the perms table entry is keyed solely
-     * on the function pointer and any continuation function pointer. In
+     * on the function pointer and not any continuation function pointer. In
      * practice this shouldn't matter because a C closure with the same
      * pointer but different continuation pointer seems to be unusual.
      */
@@ -1769,10 +1776,12 @@ p_closure(Info *info) {                              /* perms reftbl ... func */
     /* Persist the function's prototype. Pass the proto as a parameter to
      * p_proto so that it can access it and register it in the ref table. */
     pushpath(info, ".proto");
+    info->anyProtoNative = false;
     lua_pushlightuserdata(info->L, cl->l.p);  /* perms reftbl ... lcl proto */
     lua_pushvalue(info->L, -1);         /* perms reftbl ... lcl proto proto */
     persist_keyed(info, LUA_TPROTO);          /* perms reftbl ... lcl proto */
     lua_pop(info->L, 1);                            /* perms reftbl ... lcl */
+    WRITE_VALUE(info->anyProtoNative, uint8_t);
     poppath(info);
 
     /* Persist the upvalues. We pretend to write these as their own type,
@@ -1900,6 +1909,9 @@ u_closure(Info *info) {                                                /* ... */
     eris_assert(cl->l.p->code != nullptr);
     eris_assert(cl->l.p->nups == nups);
     cl->stacksize = p->maxstacksize;
+
+    /* Check if any of the inner protos originally had native code */
+    bool needCompile = READ_VALUE(uint8_t);
     poppath(info);
 
     /* Unpersist all upvalues. */
@@ -1990,7 +2002,16 @@ u_closure(Info *info) {                                                /* ... */
       poppath(info);
     }
     poppath(info);
+    if (needCompile) {
+#ifdef LUA_CUSTOM_EXECUTION
+      if (sAresCodeGenCompile == nullptr)
+        eris_error(info, "Need codegen initialize");
 
+      sAresCodeGenCompile(info->L, -1);
+#else
+      eris_error(info, "Need codegen enabled");
+#endif
+    }
   }
 
   eris_assert(lua_type(info->L, -1) == LUA_TFUNCTION);
@@ -3231,6 +3252,11 @@ eris_release_fork(lua_State *LFork) {
   global_State *glob_state = LFork->global;
   glob_state->memcatbytes[1] += glob_state->memcatbytes[old_memcat];
   glob_state->memcatbytes[old_memcat] = 0;
+}
+
+LUA_API void
+eris_set_compile_func(void (*compile_func)(lua_State*, int)) {
+  sAresCodeGenCompile = compile_func;
 }
 
 /* }======================================================================== */

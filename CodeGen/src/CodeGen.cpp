@@ -222,6 +222,9 @@ void create(lua_State* L)
     data->unwindBuilder = std::make_unique<UnwindBuilderDwarf2>();
 #endif
 
+    // Ares: Give the deserializer a reference to the compile function
+    eris_set_compile_func(compile);
+
     data->codeAllocator.context = data->unwindBuilder.get();
     data->codeAllocator.createBlockUnwindInfo = createBlockUnwindInfo;
     data->codeAllocator.destroyBlockUnwindInfo = destroyBlockUnwindInfo;
