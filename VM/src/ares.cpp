@@ -852,13 +852,13 @@ static void unpersist(Info*);
 
 static void
 p_boolean(Info *info) {                                           /* ... bool */
-  WRITE_VALUE(lua_toboolean(info->L, -1), uint8_t);
+  WRITE_VALUE(lua_toboolean(info->L, -1), int32_t);
 }
 
 static void
 u_boolean(Info *info) {                                                /* ... */
   eris_checkstack(info->L, 1);
-  lua_pushboolean(info->L, READ_VALUE(uint8_t));                  /* ... bool */
+  lua_pushboolean(info->L, READ_VALUE(int32_t));                  /* ... bool */
 
   eris_assert(lua_type(info->L, -1) == LUA_TBOOLEAN);
 }

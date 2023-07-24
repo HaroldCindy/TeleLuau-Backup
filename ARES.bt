@@ -189,11 +189,9 @@ typedef struct {
         case ET_NIL:
             break;
         case ET_BOOLEAN:
-            uint8_t val; break;
+            int32_t val; break;
         case ET_LIGHTUSERDATA:
             size_t val; break;
-        case ET_BOOLEAN:
-            uint8_t val; break;
         case ET_NUMBER:
             Number val; break;
         case ET_STRING:
