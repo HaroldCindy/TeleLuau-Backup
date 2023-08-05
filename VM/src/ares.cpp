@@ -1555,8 +1555,8 @@ u_proto(Info *info) {                                            /* ... proto */
   p->is_vararg = READ_VALUE(uint8_t);
 
   /* Read byte code. */
-  p->sizecode = READ_VALUE(int);
   eris_reallocvector(info->L, p->code, 0, p->sizecode, Instruction);
+  p->sizecode = READ_VALUE(int);
   READ(p->code, p->sizecode, Instruction);
   /* entrycode should only differ for JITted protos, and we don't deal in those. */
   /* TODO: Luau becomes very unhappy if it tries to call a proto natively but
