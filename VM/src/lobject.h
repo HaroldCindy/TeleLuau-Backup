@@ -302,6 +302,8 @@ typedef struct Proto
 
     uint8_t* typeinfo;
 
+    void* userdata;
+
     GCObject* gclist;
 
 

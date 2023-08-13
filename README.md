@@ -1,6 +1,6 @@
 # TeleLuau
 
-A fork of [Luau](https://github.com/Roblox/luau/) exploring serializable micro-VMs for 
+A fork of [Luau](https://github.com/Roblox/luau/) exploring serializable micro-VMs for
 [mobile agent](https://en.wikipedia.org/wiki/Mobile_agent) entities in virtual worlds.
 It uses a modified [Eris](https://github.com/fnuecke/eris) (renamed Ares) to serialize agent execution state.
 
