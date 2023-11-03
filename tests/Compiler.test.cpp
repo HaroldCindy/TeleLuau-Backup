@@ -63,6 +63,35 @@ static std::string compileTypeTable(const char* source)
 
 TEST_SUITE_BEGIN("Compiler");
 
+TEST_CASE("BytecodeIsStable")
+{
+    // As noted in Bytecode.h, all enums used for bytecode storage and serialization are order-sensitive
+    // Adding entries in the middle will typically pass the tests but break compatibility
+    // This test codifies this by validating that in each enum, the last (or close-to-last) entry has a fixed encoding
+
+    // This test will need to get occasionally revised to "move" the checked enum entries forward as we ship newer versions
+    // When doing so, please add *new* checks for more recent bytecode versions and keep existing checks in place.
+
+    // Bytecode ops (serialized & in-memory)
+    CHECK(LOP_FASTCALL2K == 75); // bytecode v1
+    CHECK(LOP_JUMPXEQKS == 80);  // bytecode v3
+
+    // Bytecode fastcall ids (serialized & in-memory)
+    // Note: these aren't strictly bound to specific bytecode versions, but must monotonically increase to keep backwards compat
+    CHECK(LBF_VECTOR == 54);
+    CHECK(LBF_TOSTRING == 63);
+
+    // Bytecode capture type (serialized & in-memory)
+    CHECK(LCT_UPVAL == 2); // bytecode v1
+
+    // Bytecode constants (serialized)
+    CHECK(LBC_CONSTANT_CLOSURE == 6); // bytecode v1
+
+    // Bytecode type encoding (serialized & in-memory)
+    // Note: these *can* change retroactively *if* type version is bumped, but probably shouldn't
+    LUAU_ASSERT(LBC_TYPE_BUFFER == 9); // type version 1
+}
+
 TEST_CASE("CompileToBytecode")
 {
     Luau::BytecodeBuilder bcb;
@@ -1804,17 +1833,15 @@ L2: RETURN R0 0
 L0: GETIMPORT R0 2 [math.random]
 CALL R0 0 1
 LOADK R1 K3 [0.5]
-JUMPIFNOTLT R1 R0 L1
-CLOSEUPVALS R0
-JUMP L2
-L1: ADDK R0 R0 K4 [0.29999999999999999]
-L2: NEWCLOSURE R1 P0
+JUMPIFLT R1 R0 L1
+ADDK R0 R0 K4 [0.29999999999999999]
+L1: NEWCLOSURE R1 P0
 CAPTURE REF R0
 CALL R1 0 1
-JUMPIF R1 L3
+JUMPIF R1 L2
 CLOSEUPVALS R0
 JUMPBACK L0
-L3: CLOSEUPVALS R0
+L2: CLOSEUPVALS R0
 RETURN R0 0
 )");
 
@@ -1866,40 +1893,214 @@ L2: RETURN R0 0
 L0: GETIMPORT R0 2 [math.random]
 CALL R0 0 1
 LOADK R1 K3 [0.5]
-JUMPIFNOTLT R1 R0 L1
-CLOSEUPVALS R0
-JUMP L2
-L1: ADDK R0 R0 K4 [0.29999999999999999]
-L2: NEWCLOSURE R1 P0
+JUMPIFLT R1 R0 L1
+ADDK R0 R0 K4 [0.29999999999999999]
+L1: NEWCLOSURE R1 P0
 CAPTURE UPVAL U0
 CAPTURE REF R0
 CALL R1 0 1
-JUMPIF R1 L3
+JUMPIF R1 L2
 CLOSEUPVALS R0
 JUMPBACK L0
-L3: CLOSEUPVALS R0
+L2: CLOSEUPVALS R0
 RETURN R0 0
 )");
 }
 
-TEST_CASE("LoopContinueUntilOops")
+TEST_CASE("LoopContinueIgnoresImplicitConstant")
 {
+    ScopedFastFlag luauCompileFixContinueValidation{"LuauCompileFixContinueValidation2", true};
+
     // this used to crash the compiler :(
-    try
-    {
-        Luau::BytecodeBuilder bcb;
-        Luau::compileOrThrow(bcb, R"(
+    CHECK_EQ("\n" + compileFunction0(R"(
 local _
 repeat
 continue
 until not _
+)"),
+        R"(
+RETURN R0 0
+RETURN R0 0
 )");
+}
+
+TEST_CASE("LoopContinueIgnoresExplicitConstant")
+{
+    ScopedFastFlag luauCompileFixContinueValidation{"LuauCompileFixContinueValidation2", true};
+
+    // Constants do not allocate locals and 'continue' validation should skip them if their lifetime already started
+    CHECK_EQ("\n" + compileFunction0(R"(
+local c = true
+repeat
+    continue
+until c
+)"),
+        R"(
+RETURN R0 0
+RETURN R0 0
+)");
+}
+
+TEST_CASE("LoopContinueRespectsExplicitConstant")
+{
+    ScopedFastFlag luauCompileFixContinueValidation{"LuauCompileFixContinueValidation2", true};
+
+    // If local lifetime hasn't started, even if it's a constant that will not receive an allocation, it cannot be jumped over
+    try
+    {
+        Luau::BytecodeBuilder bcb;
+        Luau::compileOrThrow(bcb, R"(
+repeat
+    do continue end
+
+    local c = true
+until c
+)");
+
+        CHECK(!"Expected CompileError");
     }
     catch (Luau::CompileError& e)
     {
+        CHECK_EQ(e.getLocation().begin.line + 1, 6);
         CHECK_EQ(
-            std::string(e.what()), "Local _ used in the repeat..until condition is undefined because continue statement on line 4 jumps over it");
+            std::string(e.what()), "Local c used in the repeat..until condition is undefined because continue statement on line 3 jumps over it");
     }
+}
+
+TEST_CASE("LoopContinueIgnoresImplicitConstantAfterInline")
+{
+    ScopedFastFlag luauCompileFixContinueValidation{"LuauCompileFixContinueValidation2", true};
+
+    // Inlining might also replace some locals with constants instead of allocating them
+    CHECK_EQ("\n" + compileFunction(R"(
+local function inline(f)
+    repeat
+        continue
+    until f
+end
+
+local function test(...)
+    inline(true)
+end
+
+test()
+)",
+                        1, 2),
+        R"(
+RETURN R0 0
+RETURN R0 0
+)");
+}
+
+TEST_CASE("LoopContinueCorrectlyHandlesImplicitConstantAfterUnroll")
+{
+    ScopedFastFlag sff{"LuauCompileFixContinueValidation2", true};
+    ScopedFastInt sfi("LuauCompileLoopUnrollThreshold", 200);
+
+    // access to implicit constant that depends on the unrolled loop constant is still invalid even though we can constant-propagate it
+    try
+    {
+        compileFunction(R"(
+for i = 1, 2 do
+    s()
+    repeat
+        if i == 2 then
+            continue
+        end
+        local x = i == 1 or a
+    until f(x)
+end
+)", 0, 2);
+
+        CHECK(!"Expected CompileError");
+    }
+    catch (Luau::CompileError& e)
+    {
+        CHECK_EQ(e.getLocation().begin.line + 1, 9);
+        CHECK_EQ(
+            std::string(e.what()), "Local x used in the repeat..until condition is undefined because continue statement on line 6 jumps over it");
+    }
+}
+
+TEST_CASE("LoopContinueUntilCapture")
+{
+    // validate continue upvalue closing behavior: continue must close locals defined in the nested scopes
+    // but can't close locals defined in the loop scope - these are visible to the condition and will be closed
+    // when evaluating the condition instead.
+    CHECK_EQ("\n" + compileFunction(R"(
+local a a = 0
+repeat
+    local b b = 0
+    if a then
+        local c
+        print(function() c = 0 end)
+        if a then
+            continue -- must close c but not a/b
+        end
+        -- must close c
+    end
+    -- must close b but not a
+until function() a = 0 b = 0 end
+-- must close b on loop exit
+-- must close a
+)",
+                        2),
+        R"(
+LOADNIL R0
+LOADN R0 0
+L0: LOADNIL R1
+LOADN R1 0
+JUMPIFNOT R0 L2
+LOADNIL R2
+GETIMPORT R3 1 [print]
+NEWCLOSURE R4 P0
+CAPTURE REF R2
+CALL R3 1 0
+JUMPIFNOT R0 L1
+CLOSEUPVALS R2
+JUMP L2
+L1: CLOSEUPVALS R2
+L2: NEWCLOSURE R2 P1
+CAPTURE REF R0
+CAPTURE REF R1
+JUMPIF R2 L3
+CLOSEUPVALS R1
+JUMPBACK L0
+L3: CLOSEUPVALS R1
+CLOSEUPVALS R0
+RETURN R0 0
+)");
+
+    // a simpler version of the above test doesn't need to close anything when evaluating continue
+    CHECK_EQ("\n" + compileFunction(R"(
+local a a = 0
+repeat
+    local b b = 0
+    if a then
+        continue -- must not close a/b
+    end
+    -- must close b but not a
+until function() a = 0 b = 0 end
+-- must close b on loop exit
+-- must close a
+)",
+                        1),
+        R"(
+LOADNIL R0
+LOADN R0 0
+L0: LOADNIL R1
+LOADN R1 0
+JUMPIF R0 L1
+L1: NEWCLOSURE R2 P0
+CAPTURE REF R0
+CAPTURE REF R1
+JUMPIF R2 L2
+CLOSEUPVALS R1
+JUMPBACK L0
+L2: CLOSEUPVALS R1
+CLOSEUPVALS R0
+RETURN R0 0
+)");
 }
 
 TEST_CASE("AndOrOptimizations")
@@ -5085,7 +5286,7 @@ RETURN R1 1
 )");
 }
 
-TEST_CASE("InlineBasicProhibited")
+TEST_CASE("InlineProhibited")
 {
     // we can't inline variadic functions
     CHECK_EQ("\n" + compileFunction(R"(
@@ -5121,6 +5322,66 @@ MOVE R1 R0
 CALL R1 0 1
 GETIMPORT R2 2 [getfenv]
 CALL R2 0 0
+RETURN R1 1
+)");
+}
+
+TEST_CASE("InlineProhibitedRecursion")
+{
+    // we can't inline recursive invocations of functions in the functions
+    // this is actually profitable in certain cases, but it complicates the compiler as it means a local has multiple registers/values
+
+    // in this example, inlining is blocked because we're compiling fact() and we don't yet have the cost model / profitability data for fact()
+    CHECK_EQ("\n" + compileFunction(R"(
+local function fact(n)
+    return if n <= 1 then 1 else fact(n-1)*n
+end
+
+return fact
+)",
+                        0, 2),
+        R"(
+LOADN R2 1
+JUMPIFNOTLE R0 R2 L0
+LOADN R1 1
+RETURN R1 1
+L0: GETUPVAL R2 0
+SUBK R3 R0 K0 [1]
+CALL R2 1 1
+MUL R1 R2 R0
+RETURN R1 1
+)");
+
+    // in this example, inlining of fact() succeeds, but the nested call to fact() fails since fact is already on the inline stack
+    CHECK_EQ("\n" + compileFunction(R"(
+local function fact(n)
+    return if n <= 1 then 1 else fact(n-1)*n
+end
+
+local function factsafe(n)
+    assert(n >= 1)
+    return fact(n)
+end
+
+return factsafe
+)",
+                        1, 2),
+        R"(
+LOADN R3 1
+JUMPIFLE R3 R0 L0
+LOADB R2 0 +1
+L0: LOADB R2 1
+L1: FASTCALL1 1 R2 L2
+GETIMPORT R1 1 [assert]
+CALL R1 1 0
+L2: LOADN R2 1
+JUMPIFNOTLE R0 R2 L3
+LOADN R1 1
+RETURN R1 1
+L3: GETUPVAL R2 0
+SUBK R3 R0 K2 [1]
+CALL R2 1 1
+MUL R1 R2 R0
 RETURN R1 1
 )");
 }
@@ -6279,7 +6540,7 @@ return
     math.log10(100),
     math.log(1),
     math.log(4, 2),
-    math.log(27, 3),
+    math.log(64, 4),
     math.max(1, 2, 3),
     math.min(1, 2, 3),
     math.pow(3, 3),
@@ -6978,8 +7239,6 @@ L3: RETURN R0 0
 
 TEST_CASE("BuiltinArity")
 {
-    ScopedFastFlag sff("LuauCompileFixBuiltinArity", true);
-
     // by default we can't assume that we know parameter/result count for builtins as they can be overridden at runtime
     CHECK_EQ("\n" + compileFunction(R"(
 return math.abs(unknown())
@@ -7254,16 +7513,38 @@ end
 )");
 }
 
+TEST_CASE("TypeUnionIntersection")
+{
+    CHECK_EQ("\n" + compileTypeTable(R"(
+function myfunc(test: string | nil, foo: nil)
+end
+
+function myfunc2(test: string & nil, foo: nil)
+end
+
+function myfunc3(test: string | number, foo: nil)
+end
+
+function myfunc4(test: string & number, foo: nil)
+end
+)"),
+        R"(
+0: function(string?, nil)
+1: function(any, nil)
+2: function(any, nil)
+3: function(any, nil)
+)");
+}
+
 TEST_CASE("BuiltinFoldMathK")
 {
-    ScopedFastFlag sff("LuauCompileFoldMathK", true);
-
     // we can fold math.pi at optimization level 2
     CHECK_EQ("\n" + compileFunction(R"(
 function test()
     return math.pi * 2
 end
-)", 0, 2),
+)",
+                        0, 2),
         R"(
 LOADK R0 K0 [6.2831853071795862]
 RETURN R0 1
@@ -7274,7 +7555,8 @@ RETURN R0 1
 function test()
     return math.pi * 2
 end
-)", 0, 1),
+)",
+                        0, 1),
         R"(
 GETIMPORT R1 3 [math.pi]
 MULK R0 R1 K0 [2]
@@ -7288,12 +7570,133 @@ function test()
 end
 
 math = { pi = 4 }
-)", 0, 2),
+)",
+                        0, 2),
         R"(
 GETGLOBAL R2 K1 ['math']
 GETTABLEKS R1 R2 K2 ['pi']
 MULK R0 R1 K0 [2]
 RETURN R0 1
+)");
+}
+
+TEST_CASE("NoBuiltinFoldFenv")
+{
+    // builtin folding is disabled when getfenv/setfenv is used in the module
+    CHECK_EQ("\n" + compileFunction(R"(
+getfenv()
+
+function test()
+    return math.pi, math.sin(0)
+end
+)",
+                        0, 2),
+        R"(
+GETIMPORT R0 2 [math.pi]
+LOADN R2 0
+FASTCALL1 24 R2 L0
+GETIMPORT R1 4 [math.sin]
+CALL R1 1 1
+L0: RETURN R0 2
+)");
+}
+
+TEST_CASE("IfThenElseAndOr")
+{
+    ScopedFastFlag sff("LuauCompileIfElseAndOr", true);
+
+    // if v then v else k can be optimized to ORK
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x = ...
+return if x then x else 0
+)"),
+        R"(
+GETVARARGS R0 1
+ORK R1 R0 K0 [0]
+RETURN R1 1
+)");
+
+    // if v then v else l can be optimized to OR
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x, y = ...
+return if x then x else y
+)"),
+        R"(
+GETVARARGS R0 2
+OR R2 R0 R1
+RETURN R2 1
+)");
+
+    // this also works in presence of type casts
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x, y = ...
+return if x then x :: number else 0
+)"),
+        R"(
+GETVARARGS R0 2
+ORK R2 R0 K0 [0]
+RETURN R2 1
+)");
+
+    // if v then k else v can be optimized to ANDK
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x = ...
+return if x then 0 else x
+)"),
+        R"(
+GETVARARGS R0 1
+ANDK R1 R0 K0 [0]
+RETURN R1 1
+)");
+
+    // if v then l else v can be optimized to AND
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x, y = ...
+return if x then y else x
+)"),
+        R"(
+GETVARARGS R0 2
+AND R2 R0 R1
+RETURN R2 1
+)");
+
+    // this also works in presence of type casts
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x, y = ...
+return if x then y else x :: number
+)"),
+        R"(
+GETVARARGS R0 2
+AND R2 R0 R1
+RETURN R2 1
+)");
+
+    // all of the above work when the target is a temporary register, which is safe because the value is only mutated once
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x, y = ...
+x = if x then x else y
+x = if x then y else x
+)"),
+        R"(
+GETVARARGS R0 2
+OR R0 R0 R1
+AND R0 R0 R1
+RETURN R0 0
+)");
+
+    // note that we can't do this transformation if the expression has possible side effects
+    CHECK_EQ("\n" + compileFunction0(R"(
+local x = ...
+return if x.data then x.data else 0
+)"),
+        R"(
+GETVARARGS R0 1
+GETTABLEKS R2 R0 K0 ['data']
+JUMPIFNOT R2 L0
+GETTABLEKS R1 R0 K0 ['data']
+RETURN R1 1
+L0: LOADN R1 0
+RETURN R1 1
 )");
 }
 

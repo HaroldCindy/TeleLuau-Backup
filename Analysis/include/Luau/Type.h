@@ -1,6 +1,8 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #pragma once
 
+#include "Luau/TypeFwd.h"
+
 #include "Luau/Ast.h"
 #include "Luau/Common.h"
 #include "Luau/Refinement.h"
@@ -9,6 +11,7 @@
 #include "Luau/Predicate.h"
 #include "Luau/Unifiable.h"
 #include "Luau/Variant.h"
+#include "Luau/TypeFwd.h"
 
 #include <atomic>
 #include <deque>
@@ -58,22 +61,6 @@ struct TypeFamily;
  * function<a>(x: { f: a }, y: a) x.f = y end
  * ```
  */
-
-// So... why `const T*` here rather than `T*`?
-// It's because we've had problems caused by the type graph being mutated
-// in ways it shouldn't be, for example mutating types from other modules.
-// To try to control this, we make the use of types immutable by default,
-// then provide explicit mutable access via getMutable and asMutable.
-// This means we can grep for all the places we're mutating the type graph,
-// and it makes it possible to provide other APIs (e.g. the txn log)
-// which control mutable access to the type graph.
-struct TypePackVar;
-using TypePackId = const TypePackVar*;
-
-struct Type;
-
-// Should never be null
-using TypeId = const Type*;
 
 using Name = std::string;
 
@@ -141,8 +128,6 @@ struct BlockedType
 {
     BlockedType();
     int index;
-
-    static int DEPRECATED_nextIndex;
 };
 
 struct PrimitiveType
@@ -246,22 +231,6 @@ const T* get(const SingletonType* stv)
         return nullptr;
 }
 
-struct GenericTypeDefinition
-{
-    TypeId ty;
-    std::optional<TypeId> defaultValue;
-
-    bool operator==(const GenericTypeDefinition& rhs) const;
-};
-
-struct GenericTypePackDefinition
-{
-    TypePackId tp;
-    std::optional<TypePackId> defaultValue;
-
-    bool operator==(const GenericTypePackDefinition& rhs) const;
-};
-
 struct FunctionArgument
 {
     Name name;
@@ -357,6 +326,7 @@ struct FunctionType
     // `hasNoFreeOrGenericTypes` should be true if and only if the type does not have any free or generic types present inside it.
     // this flag is used as an optimization to exit early from procedures that manipulate free or generic types.
     bool hasNoFreeOrGenericTypes = false;
+    bool isCheckedFunction = false;
 };
 
 enum class TableState
@@ -404,6 +374,7 @@ struct Property
     bool deprecated = false;
     std::string deprecatedSuggestion;
     std::optional<Location> location = std::nullopt;
+    std::optional<Location> typeLocation = std::nullopt;
     Tags tags;
     std::optional<std::string> documentationSymbol;
 
@@ -411,7 +382,7 @@ struct Property
     // TODO: Kill all constructors in favor of `Property::rw(TypeId read, TypeId write)` and friends.
     Property();
     Property(TypeId readTy, bool deprecated = false, const std::string& deprecatedSuggestion = "", std::optional<Location> location = std::nullopt,
-        const Tags& tags = {}, const std::optional<std::string>& documentationSymbol = std::nullopt);
+        const Tags& tags = {}, const std::optional<std::string>& documentationSymbol = std::nullopt, std::optional<Location> typeLocation = std::nullopt);
 
     // DEPRECATED: Should only be called in non-RWP! We assert that the `readTy` is not nullopt.
     // TODO: Kill once we don't have non-RWP.
@@ -548,42 +519,6 @@ struct TypeFamilyInstanceType
 
     std::vector<TypeId> typeArguments;
     std::vector<TypePackId> packArguments;
-};
-
-struct TypeFun
-{
-    // These should all be generic
-    std::vector<GenericTypeDefinition> typeParams;
-    std::vector<GenericTypePackDefinition> typePackParams;
-
-    /** The underlying type.
-     *
-     * WARNING!  This is not safe to use as a type if typeParams is not empty!!
-     * You must first use TypeChecker::instantiateTypeFun to turn it into a real type.
-     */
-    TypeId type;
-
-    TypeFun() = default;
-
-    explicit TypeFun(TypeId ty)
-        : type(ty)
-    {
-    }
-
-    TypeFun(std::vector<GenericTypeDefinition> typeParams, TypeId type)
-        : typeParams(std::move(typeParams))
-        , type(type)
-    {
-    }
-
-    TypeFun(std::vector<GenericTypeDefinition> typeParams, std::vector<GenericTypePackDefinition> typePackParams, TypeId type)
-        : typeParams(std::move(typeParams))
-        , typePackParams(std::move(typePackParams))
-        , type(type)
-    {
-    }
-
-    bool operator==(const TypeFun& rhs) const;
 };
 
 /** Represents a pending type alias instantiation.
@@ -730,12 +665,72 @@ struct Type final
     Type& operator=(const Type& rhs);
 };
 
+struct GenericTypeDefinition
+{
+    TypeId ty;
+    std::optional<TypeId> defaultValue;
+
+    bool operator==(const GenericTypeDefinition& rhs) const;
+};
+
+struct GenericTypePackDefinition
+{
+    TypePackId tp;
+    std::optional<TypePackId> defaultValue;
+
+    bool operator==(const GenericTypePackDefinition& rhs) const;
+};
+
+struct TypeFun
+{
+    // These should all be generic
+    std::vector<GenericTypeDefinition> typeParams;
+    std::vector<GenericTypePackDefinition> typePackParams;
+
+    /** The underlying type.
+     *
+     * WARNING!  This is not safe to use as a type if typeParams is not empty!!
+     * You must first use TypeChecker::instantiateTypeFun to turn it into a real type.
+     */
+    TypeId type;
+
+    TypeFun() = default;
+
+    explicit TypeFun(TypeId ty)
+        : type(ty)
+    {
+    }
+
+    TypeFun(std::vector<GenericTypeDefinition> typeParams, TypeId type)
+        : typeParams(std::move(typeParams))
+        , type(type)
+    {
+    }
+
+    TypeFun(std::vector<GenericTypeDefinition> typeParams, std::vector<GenericTypePackDefinition> typePackParams, TypeId type)
+        : typeParams(std::move(typeParams))
+        , typePackParams(std::move(typePackParams))
+        , type(type)
+    {
+    }
+
+    bool operator==(const TypeFun& rhs) const;
+};
+
 using SeenSet = std::set<std::pair<const void*, const void*>>;
 bool areEqual(SeenSet& seen, const Type& lhs, const Type& rhs);
 
+enum class FollowOption
+{
+    Normal,
+    DisableLazyTypeThunks,
+};
+
 // Follow BoundTypes until we get to something real
 TypeId follow(TypeId t);
+TypeId follow(TypeId t, FollowOption followOption);
 TypeId follow(TypeId t, const void* context, TypeId (*mapper)(const void*, TypeId));
+TypeId follow(TypeId t, FollowOption followOption, const void* context, TypeId (*mapper)(const void*, TypeId));
 
 std::vector<TypeId> flattenIntersection(TypeId ty);
 
@@ -790,11 +785,12 @@ struct BuiltinTypes
     TypeId errorRecoveryType() const;
     TypePackId errorRecoveryTypePack() const;
 
+    friend TypeId makeStringMetatable(NotNull<BuiltinTypes> builtinTypes);
+    friend struct GlobalTypes;
+
 private:
     std::unique_ptr<struct TypeArena> arena;
     bool debugFreezeArena = false;
-
-    TypeId makeStringMetatable();
 
 public:
     const TypeId nilType;
@@ -818,6 +814,7 @@ public:
     const TypeId optionalNumberType;
     const TypeId optionalStringType;
 
+    const TypePackId emptyTypePack;
     const TypePackId anyTypePack;
     const TypePackId neverTypePack;
     const TypePackId uninhabitableTypePack;
@@ -838,6 +835,18 @@ const Property* lookupClassProp(const ClassType* cls, const Name& name);
 bool isSubclass(const ClassType* cls, const ClassType* parent);
 
 Type* asMutable(TypeId ty);
+
+template<typename... Ts, typename T>
+bool is(T&& tv)
+{
+    if (!tv)
+        return false;
+
+    if constexpr (std::is_same_v<TypeId, T> && !(std::is_same_v<BoundType, Ts> || ...))
+        LUAU_ASSERT(get_if<BoundType>(&tv->ty) == nullptr);
+
+    return (get<Ts>(tv) || ...);
+}
 
 template<typename T>
 const T* get(TypeId tv)

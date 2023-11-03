@@ -10,8 +10,6 @@ roam across server instances.
 This is a work-in-progress, and includes a lot of changes to support transparently serializable execution state
 that are unlikely to be upstreamable, but might be a helpful reference. See `microvm_notes.md` for rough WIP notes.
 
-# Status
-
 See [the current diff between Luau and Teleluau here](https://github.com/HaroldCindy/teleluau/compare/master...teleluau?expand=1)
 
 The changes to Luau proper are pretty minimal and mainly involve adding hooks to support VM state serialization.
@@ -25,6 +23,7 @@ The changes to Luau proper are pretty minimal and mainly involve adding hooks to
 * * This could do with some tuning to make GC more likely as a fork's soft memory limit approaches
 * Pre-emptive scheduling is not yet implemented, an extensible scheduler interface is planned.
 
+<<<<<<< HEAD
 # Contributing
 
 Sure! PRs are welcome, as are discussions and emails. Truth be told, I'm using this to learn Lua and VM design by
@@ -78,6 +77,6 @@ Other than the STL/CRT, Luau library components don't have external dependencies
 
 # License
 
-Luau implementation is distributed under the terms of [MIT License](https://github.com/Roblox/luau/blob/master/LICENSE.txt). It is based on Lua 5.x implementation that is MIT licensed as well.
+Luau implementation is distributed under the terms of [MIT License](https://github.com/luau-lang/luau/blob/master/LICENSE.txt). It is based on Lua 5.x implementation that is MIT licensed as well.
 
-When Luau is integrated into external projects, we ask to honor the license agreement and include Luau attribution into the user-facing product documentation. The attribution using [Luau logo](https://github.com/Roblox/luau/blob/master/docs/logo.svg) is also encouraged.
+When Luau is integrated into external projects, we ask to honor the license agreement and include Luau attribution into the user-facing product documentation. The attribution using [Luau logo](https://github.com/luau-lang/site/blob/master/logo.svg) is also encouraged.

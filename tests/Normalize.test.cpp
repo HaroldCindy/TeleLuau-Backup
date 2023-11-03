@@ -516,6 +516,71 @@ struct NormalizeFixture : Fixture
 
 TEST_SUITE_BEGIN("Normalize");
 
+TEST_CASE_FIXTURE(NormalizeFixture, "string_intersection_is_commutative")
+{
+    auto c4 = toString(normal(R"(
+        string & (string & Not<"a"> & Not<"b">)
+)"));
+    auto c4Reverse = toString(normal(R"(
+        (string & Not<"a"> & Not<"b">) & string
+)"));
+    CHECK(c4 == c4Reverse);
+    CHECK_EQ("string & ~\"a\" & ~\"b\"", c4);
+
+    auto c5 = toString(normal(R"(
+        (string & Not<"a"> & Not<"b">) & (string & Not<"b"> & Not<"c">)
+)"));
+    auto c5Reverse = toString(normal(R"(
+        (string & Not<"b"> & Not<"c">) & (string & Not<"a"> & Not<"c">)
+)"));
+    CHECK(c5 == c5Reverse);
+    CHECK_EQ("string & ~\"a\" & ~\"b\" & ~\"c\"", c5);
+
+    auto c6 = toString(normal(R"(
+        ("a" | "b") & (string & Not<"b"> & Not<"c">)
+)"));
+    auto c6Reverse = toString(normal(R"(
+        (string & Not<"b"> & Not<"c">) & ("a" | "b")
+)"));
+    CHECK(c6 == c6Reverse);
+    CHECK_EQ("\"a\"", c6);
+
+    auto c7 = toString(normal(R"(
+        string & ("b" | "c")
+)"));
+    auto c7Reverse = toString(normal(R"(
+        ("b" | "c") & string
+)"));
+    CHECK(c7 == c7Reverse);
+    CHECK_EQ("\"b\" | \"c\"", c7);
+
+    auto c8 = toString(normal(R"(
+(string & Not<"a"> & Not<"b">) & ("b" | "c")
+)"));
+    auto c8Reverse = toString(normal(R"(
+        ("b" | "c") & (string & Not<"a"> & Not<"b">)
+)"));
+    CHECK(c8 == c8Reverse);
+    CHECK_EQ("\"c\"", c8);
+    auto c9 = toString(normal(R"(
+            ("a" | "b") & ("b" | "c")
+    )"));
+    auto c9Reverse = toString(normal(R"(
+            ("b" | "c") & ("a" | "b")
+    )"));
+    CHECK(c9 == c9Reverse);
+    CHECK_EQ("\"b\"", c9);
+
+    auto l = toString(normal(R"(
+         (string | number) & ("a" | true)
+    )"));
+    auto r = toString(normal(R"(
+         ("a" | true) & (string | number)
+    )"));
+    CHECK(l == r);
+    CHECK_EQ("\"a\"", l);
+}
+
 TEST_CASE_FIXTURE(NormalizeFixture, "negate_string")
 {
     CHECK("number" == toString(normal(R"(
@@ -732,7 +797,10 @@ TEST_CASE_FIXTURE(NormalizeFixture, "narrow_union_of_classes_with_intersection")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "intersection_of_metatables_where_the_metatable_is_top_or_bottom")
 {
-    CHECK("{ @metatable *error-type*, {|  |} }" == toString(normal("Mt<{}, any> & Mt<{}, err>")));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK("{ @metatable *error-type*, {  } }" == toString(normal("Mt<{}, any> & Mt<{}, err>")));
+    else
+        CHECK("{ @metatable *error-type*, {|  |} }" == toString(normal("Mt<{}, any> & Mt<{}, err>")));
 }
 
 TEST_CASE_FIXTURE(NormalizeFixture, "recurring_intersection")
@@ -798,7 +866,10 @@ TEST_CASE_FIXTURE(NormalizeFixture, "classes_and_never")
 TEST_CASE_FIXTURE(NormalizeFixture, "top_table_type")
 {
     CHECK("table" == toString(normal("{} | tbl")));
-    CHECK("{|  |}" == toString(normal("{} & tbl")));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK("{  }" == toString(normal("{} & tbl")));
+    else
+        CHECK("{|  |}" == toString(normal("{} & tbl")));
     CHECK("never" == toString(normal("number & tbl")));
 }
 
@@ -811,10 +882,6 @@ TEST_CASE_FIXTURE(NormalizeFixture, "negations_of_tables")
 
 TEST_CASE_FIXTURE(NormalizeFixture, "normalize_blocked_types")
 {
-    ScopedFastFlag sff[]{
-        {"LuauNormalizeBlockedTypes", true},
-    };
-
     Type blocked{BlockedType{}};
 
     const NormalizedType* norm = normalizer.normalize(&blocked);

@@ -50,7 +50,10 @@ TEST_CASE_FIXTURE(Fixture, "cyclic_table")
     TableType* tableOne = getMutable<TableType>(&cyclicTable);
     tableOne->props["self"] = {&cyclicTable};
 
-    CHECK_EQ("t1 where t1 = { self: t1 }", toString(&cyclicTable));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("t1 where t1 = {| self: t1 |}", toString(&cyclicTable));
+    else
+        CHECK_EQ("t1 where t1 = { self: t1 }", toString(&cyclicTable));
 }
 
 TEST_CASE_FIXTURE(Fixture, "named_table")
@@ -68,12 +71,18 @@ TEST_CASE_FIXTURE(Fixture, "empty_table")
         local a: {}
     )");
 
-    CHECK_EQ("{|  |}", toString(requireType("a")));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("{  }", toString(requireType("a")));
+    else
+        CHECK_EQ("{|  |}", toString(requireType("a")));
 
     // Should stay the same with useLineBreaks enabled
     ToStringOptions opts;
     opts.useLineBreaks = true;
-    CHECK_EQ("{|  |}", toString(requireType("a"), opts));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("{  }", toString(requireType("a"), opts));
+    else
+        CHECK_EQ("{|  |}", toString(requireType("a"), opts));
 }
 
 TEST_CASE_FIXTURE(Fixture, "table_respects_use_line_break")
@@ -86,12 +95,20 @@ TEST_CASE_FIXTURE(Fixture, "table_respects_use_line_break")
     opts.useLineBreaks = true;
 
     //clang-format off
-    CHECK_EQ("{|\n"
-             "    anotherProp: number,\n"
-             "    prop: string,\n"
-             "    thirdProp: boolean\n"
-             "|}",
-        toString(requireType("a"), opts));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("{\n"
+                 "    anotherProp: number,\n"
+                 "    prop: string,\n"
+                 "    thirdProp: boolean\n"
+                 "}",
+            toString(requireType("a"), opts));
+    else
+        CHECK_EQ("{|\n"
+                 "    anotherProp: number,\n"
+                 "    prop: string,\n"
+                 "    thirdProp: boolean\n"
+                 "|}",
+            toString(requireType("a"), opts));
     //clang-format on
 }
 
@@ -122,7 +139,10 @@ TEST_CASE_FIXTURE(Fixture, "metatable")
     Type table{TypeVariant(TableType())};
     Type metatable{TypeVariant(TableType())};
     Type mtv{TypeVariant(MetatableType{&table, &metatable})};
-    CHECK_EQ("{ @metatable {  }, {  } }", toString(&mtv));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("{ @metatable {|  |}, {|  |} }", toString(&mtv));
+    else
+        CHECK_EQ("{ @metatable {  }, {  } }", toString(&mtv));
 }
 
 TEST_CASE_FIXTURE(Fixture, "named_metatable")
@@ -214,8 +234,41 @@ TEST_CASE_FIXTURE(Fixture, "functions_are_always_parenthesized_in_unions_or_inte
     CHECK_EQ(toString(&itv), "((number, string) -> (string, number)) & ((string, number) -> (number, string))");
 }
 
-TEST_CASE_FIXTURE(Fixture, "intersections_respects_use_line_breaks")
+TEST_CASE_FIXTURE(Fixture, "simple_intersections_printed_on_one_line")
 {
+    ScopedFastFlag sff{"LuauToStringSimpleCompositeTypesSingleLine", true};
+    CheckResult result = check(R"(
+        local a: string & number
+    )");
+
+    ToStringOptions opts;
+    opts.useLineBreaks = true;
+
+    CHECK_EQ("number & string", toString(requireType("a"), opts));
+}
+
+TEST_CASE_FIXTURE(Fixture, "complex_intersections_printed_on_multiple_lines")
+{
+    ScopedFastFlag sff{"LuauToStringSimpleCompositeTypesSingleLine", true};
+    CheckResult result = check(R"(
+        local a: string & number & boolean
+    )");
+
+    ToStringOptions opts;
+    opts.useLineBreaks = true;
+    opts.compositeTypesSingleLineLimit = 2;
+
+    //clang-format off
+    CHECK_EQ("boolean\n"
+             "& number\n"
+             "& string",
+        toString(requireType("a"), opts));
+    //clang-format on
+}
+
+TEST_CASE_FIXTURE(Fixture, "overloaded_functions_always_printed_on_multiple_lines")
+{
+    ScopedFastFlag sff{"LuauToStringSimpleCompositeTypesSingleLine", true};
     CheckResult result = check(R"(
         local a: ((string) -> string) & ((number) -> number)
     )");
@@ -230,13 +283,28 @@ TEST_CASE_FIXTURE(Fixture, "intersections_respects_use_line_breaks")
     //clang-format on
 }
 
-TEST_CASE_FIXTURE(Fixture, "unions_respects_use_line_breaks")
+TEST_CASE_FIXTURE(Fixture, "simple_unions_printed_on_one_line")
 {
+    ScopedFastFlag sff{"LuauToStringSimpleCompositeTypesSingleLine", true};
+    CheckResult result = check(R"(
+        local a: number | boolean
+    )");
+
+    ToStringOptions opts;
+    opts.useLineBreaks = true;
+
+    CHECK_EQ("boolean | number", toString(requireType("a"), opts));
+}
+
+TEST_CASE_FIXTURE(Fixture, "complex_unions_printed_on_multiple_lines")
+{
+    ScopedFastFlag sff{"LuauToStringSimpleCompositeTypesSingleLine", true};
     CheckResult result = check(R"(
         local a: string | number | boolean
     )");
 
     ToStringOptions opts;
+    opts.compositeTypesSingleLineLimit = 2;
     opts.useLineBreaks = true;
 
     //clang-format off
@@ -258,7 +326,10 @@ TEST_CASE_FIXTURE(Fixture, "quit_stringifying_table_type_when_length_is_exceeded
     ToStringOptions o;
     o.exhaustive = false;
     o.maxTableLength = 40;
-    CHECK_EQ(toString(&tv, o), "{ a: number, b: number, c: number, d: number, e: number, ... 10 more ... }");
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ(toString(&tv, o), "{| a: number, b: number, c: number, d: number, e: number, ... 10 more ... |}");
+    else
+        CHECK_EQ(toString(&tv, o), "{ a: number, b: number, c: number, d: number, e: number, ... 10 more ... }");
 }
 
 TEST_CASE_FIXTURE(Fixture, "stringifying_table_type_is_still_capped_when_exhaustive")
@@ -272,7 +343,10 @@ TEST_CASE_FIXTURE(Fixture, "stringifying_table_type_is_still_capped_when_exhaust
     ToStringOptions o;
     o.exhaustive = true;
     o.maxTableLength = 40;
-    CHECK_EQ(toString(&tv, o), "{ a: number, b: number, c: number, d: number, e: number, ... 2 more ... }");
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ(toString(&tv, o), "{| a: number, b: number, c: number, d: number, e: number, ... 2 more ... |}");
+    else
+        CHECK_EQ(toString(&tv, o), "{ a: number, b: number, c: number, d: number, e: number, ... 2 more ... }");
 }
 
 TEST_CASE_FIXTURE(Fixture, "quit_stringifying_type_when_length_is_exceeded")
@@ -346,7 +420,10 @@ TEST_CASE_FIXTURE(Fixture, "stringifying_table_type_correctly_use_matching_table
 
     ToStringOptions o;
     o.maxTableLength = 40;
-    CHECK_EQ(toString(&tv, o), "{| a: number, b: number, c: number, d: number, e: number, ... 5 more ... |}");
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ(toString(&tv, o), "{ a: number, b: number, c: number, d: number, e: number, ... 5 more ... }");
+    else
+        CHECK_EQ(toString(&tv, o), "{| a: number, b: number, c: number, d: number, e: number, ... 5 more ... |}");
 }
 
 TEST_CASE_FIXTURE(Fixture, "stringifying_cyclic_union_type_bails_early")
@@ -377,7 +454,10 @@ TEST_CASE_FIXTURE(Fixture, "stringifying_array_uses_array_syntax")
     CHECK_EQ("{string}", toString(Type{ttv}));
 
     ttv.props["A"] = {builtinTypes->numberType};
-    CHECK_EQ("{| [number]: string, A: number |}", toString(Type{ttv}));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("{ [number]: string, A: number }", toString(Type{ttv}));
+    else
+        CHECK_EQ("{| [number]: string, A: number |}", toString(Type{ttv}));
 
     ttv.props.clear();
     ttv.state = TableState::Unsealed;
@@ -576,8 +656,17 @@ TEST_CASE_FIXTURE(Fixture, "toString_the_boundTo_table_type_contained_within_a_T
 
     TypePackVar tpv2{TypePack{{&tv2}}};
 
-    CHECK_EQ("{| hello: number, world: number |}", toString(&tpv1));
-    CHECK_EQ("{| hello: number, world: number |}", toString(&tpv2));
+
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        CHECK_EQ("{ hello: number, world: number }", toString(&tpv1));
+        CHECK_EQ("{ hello: number, world: number }", toString(&tpv2));
+    }
+    else
+    {
+        CHECK_EQ("{| hello: number, world: number |}", toString(&tpv1));
+        CHECK_EQ("{| hello: number, world: number |}", toString(&tpv2));
+    }
 }
 
 TEST_CASE_FIXTURE(Fixture, "no_parentheses_around_return_type_if_pack_has_an_empty_head_link")
@@ -789,7 +878,10 @@ TEST_CASE_FIXTURE(Fixture, "toStringNamedFunction_include_self_param")
     auto ttv = get<TableType>(follow(parentTy));
     auto ftv = get<FunctionType>(follow(ttv->props.at("method").type()));
 
-    CHECK_EQ("foo:method<a>(self: a, arg: string): ()", toStringNamedFunction("foo:method", *ftv));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("foo:method(self: unknown, arg: string): ()", toStringNamedFunction("foo:method", *ftv));
+    else
+        CHECK_EQ("foo:method<a>(self: a, arg: string): ()", toStringNamedFunction("foo:method", *ftv));
 }
 
 TEST_CASE_FIXTURE(Fixture, "toStringNamedFunction_hide_self_param")
@@ -814,7 +906,10 @@ TEST_CASE_FIXTURE(Fixture, "toStringNamedFunction_hide_self_param")
     auto ftv = get<FunctionType>(methodTy);
     REQUIRE_MESSAGE(ftv, "Expected a function but got " << toString(methodTy, opts));
 
-    CHECK_EQ("foo:method<a>(arg: string): ()", toStringNamedFunction("foo:method", *ftv, opts));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("foo:method(arg: string): ()", toStringNamedFunction("foo:method", *ftv, opts));
+    else
+        CHECK_EQ("foo:method<a>(arg: string): ()", toStringNamedFunction("foo:method", *ftv, opts));
 }
 
 TEST_CASE_FIXTURE(Fixture, "tostring_unsee_ttv_if_array")
@@ -833,14 +928,6 @@ TEST_CASE_FIXTURE(Fixture, "tostring_unsee_ttv_if_array")
 
 TEST_CASE_FIXTURE(Fixture, "tostring_error_mismatch")
 {
-    ScopedFastFlag sff[] = {
-        {"LuauIndentTypeMismatch", true},
-    };
-
-    ScopedFastInt sfi[] = {
-        {"LuauIndentTypeMismatchMaxTypeLength", 10},
-    };
-
     CheckResult result = check(R"(
 --!strict
    function f1() : {a : number, b : string, c : { d : number}}
@@ -848,22 +935,63 @@ TEST_CASE_FIXTURE(Fixture, "tostring_error_mismatch")
    end
 
 )");
-    std::string expected = R"(Type
+    //clang-format off
+    std::string expected =
+        (FFlag::DebugLuauDeferredConstraintResolution) ?
+R"(Type
+    '{| a: number, b: string, c: {| d: string |} |}'
+could not be converted into
+    '{ a: number, b: string, c: { d: number } }'
+caused by:
+  Property 'c' is not compatible.
+Type
+    '{| d: string |}'
+could not be converted into
+    '{ d: number }'
+caused by:
+  Property 'd' is not compatible.
+Type 'string' could not be converted into 'number' in an invariant context)"
+        :
+R"(Type
     '{ a: number, b: string, c: { d: string } }'
 could not be converted into
     '{| a: number, b: string, c: {| d: number |} |}'
 caused by:
-  Property 'c' is not compatible. 
+  Property 'c' is not compatible.
 Type
     '{ d: string }'
 could not be converted into
     '{| d: number |}'
 caused by:
-  Property 'd' is not compatible. 
+  Property 'd' is not compatible.
 Type 'string' could not be converted into 'number' in an invariant context)";
+    //clang-format on
+    //
     std::string actual = toString(result.errors[0]);
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
+
     CHECK(expected == actual);
+}
+
+TEST_CASE_FIXTURE(Fixture, "checked_fn_toString")
+{
+    ScopedFastFlag flags[] = {
+        {"LuauCheckedFunctionSyntax", true},
+        {"DebugLuauDeferredConstraintResolution", true},
+    };
+
+    auto _result = loadDefinition(R"(
+declare function @checked abs(n: number) : number
+)");
+
+    auto result = check(Mode::Nonstrict, R"(
+local f = abs
+)");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+
+    TypeId fn = requireType("f");
+    CHECK("@checked (number) -> number" == toString(fn));
 }
 TEST_SUITE_END();

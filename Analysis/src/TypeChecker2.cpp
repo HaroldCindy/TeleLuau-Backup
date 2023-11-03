@@ -11,18 +11,21 @@
 #include "Luau/Instantiation.h"
 #include "Luau/Metamethods.h"
 #include "Luau/Normalize.h"
+#include "Luau/Subtyping.h"
 #include "Luau/ToString.h"
 #include "Luau/TxnLog.h"
 #include "Luau/Type.h"
-#include "Luau/TypePack.h"
-#include "Luau/TypeUtils.h"
-#include "Luau/Unifier.h"
 #include "Luau/TypeFamily.h"
+#include "Luau/TypeFwd.h"
+#include "Luau/TypePack.h"
+#include "Luau/TypePath.h"
+#include "Luau/TypeUtils.h"
 #include "Luau/VisitType.h"
 
 #include <algorithm>
 
 LUAU_FASTFLAG(DebugLuauMagicTypes)
+LUAU_FASTFLAG(LuauFloorDivision);
 
 namespace Luau
 {
@@ -240,9 +243,11 @@ struct TypeChecker2
     DenseHashSet<TypeId> noTypeFamilyErrors{nullptr};
 
     Normalizer normalizer;
+    Subtyping _subtyping;
+    NotNull<Subtyping> subtyping;
 
-    TypeChecker2(NotNull<BuiltinTypes> builtinTypes, NotNull<UnifierSharedState> unifierState, NotNull<TypeCheckLimits> limits, DcrLogger* logger, const SourceModule* sourceModule,
-        Module* module)
+    TypeChecker2(NotNull<BuiltinTypes> builtinTypes, NotNull<UnifierSharedState> unifierState, NotNull<TypeCheckLimits> limits, DcrLogger* logger,
+        const SourceModule* sourceModule, Module* module)
         : builtinTypes(builtinTypes)
         , logger(logger)
         , limits(limits)
@@ -250,6 +255,9 @@ struct TypeChecker2
         , sourceModule(sourceModule)
         , module(module)
         , normalizer{&testArena, builtinTypes, unifierState, /* cacheInhabitance */ true}
+        , _subtyping{builtinTypes, NotNull{&testArena}, NotNull{&normalizer}, NotNull{unifierState->iceHandler},
+              NotNull{module->getModuleScope().get()}}
+        , subtyping(&_subtyping)
     {
     }
 
@@ -278,9 +286,9 @@ struct TypeChecker2
         if (noTypeFamilyErrors.find(instance))
             return instance;
 
-        TxnLog fake{};
-        ErrorVec errors =
-            reduceFamilies(instance, location, NotNull{&testArena}, builtinTypes, stack.back(), NotNull{&normalizer}, &fake, true).errors;
+        ErrorVec errors = reduceFamilies(
+            instance, location, TypeFamilyContext{NotNull{&testArena}, builtinTypes, stack.back(), NotNull{&normalizer}, ice, limits}, true)
+                              .errors;
 
         if (errors.empty())
             noTypeFamilyErrors.insert(instance);
@@ -487,17 +495,7 @@ struct TypeChecker2
         TypeArena* arena = &testArena;
         TypePackId actualRetType = reconstructPack(ret->list, *arena);
 
-        Unifier u{NotNull{&normalizer}, stack.back(), ret->location, Covariant};
-        u.hideousFixMeGenericsAreActuallyFree = true;
-
-        u.tryUnify(actualRetType, expectedRetType);
-        const bool ok = (u.errors.empty() && u.log.empty()) || isErrorSuppressing(ret->location, actualRetType, ret->location, expectedRetType);
-
-        if (!ok)
-        {
-            for (const TypeError& e : u.errors)
-                reportError(e);
-        }
+        testIsSubtype(actualRetType, expectedRetType, ret->location);
 
         for (AstExpr* expr : ret->list)
             visit(expr, ValueContext::RValue);
@@ -528,9 +526,7 @@ struct TypeChecker2
                     TypeId annotationType = lookupAnnotation(var->annotation);
                     TypeId valueType = value ? lookupType(value) : nullptr;
                     if (valueType)
-                    {
-                        reportErrors(tryUnify(stack.back(), value->location, valueType, annotationType));
-                    }
+                        testIsSubtype(valueType, annotationType, value->location);
 
                     visit(var->annotation);
                 }
@@ -555,7 +551,7 @@ struct TypeChecker2
                     if (var->annotation)
                     {
                         TypeId varType = lookupAnnotation(var->annotation);
-                        reportErrors(tryUnify(stack.back(), value->location, valueTypes.head[j - i], varType));
+                        testIsSubtype(valueTypes.head[j - i], varType, value->location);
 
                         visit(var->annotation);
                     }
@@ -582,20 +578,20 @@ struct TypeChecker2
 
     void visit(AstStatFor* forStatement)
     {
-        NotNull<Scope> scope = stack.back();
-
         if (forStatement->var->annotation)
         {
             visit(forStatement->var->annotation);
-            reportErrors(tryUnify(scope, forStatement->var->location, builtinTypes->numberType, lookupAnnotation(forStatement->var->annotation)));
+
+            TypeId annotatedType = lookupAnnotation(forStatement->var->annotation);
+            testIsSubtype(builtinTypes->numberType, annotatedType, forStatement->var->location);
         }
 
-        auto checkNumber = [this, scope](AstExpr* expr) {
+        auto checkNumber = [this](AstExpr* expr) {
             if (!expr)
                 return;
 
             visit(expr, ValueContext::RValue);
-            reportErrors(tryUnify(scope, expr->location, lookupType(expr), builtinTypes->numberType));
+            testIsSubtype(lookupType(expr), builtinTypes->numberType, expr->location);
         };
 
         checkNumber(forStatement->from);
@@ -685,8 +681,7 @@ struct TypeChecker2
         }
         TypeId iteratorTy = follow(iteratorTypes.head[0]);
 
-        auto checkFunction = [this, &arena, &scope, &forInStatement, &variableTypes](
-                                 const FunctionType* iterFtv, std::vector<TypeId> iterTys, bool isMm) {
+        auto checkFunction = [this, &arena, &forInStatement, &variableTypes](const FunctionType* iterFtv, std::vector<TypeId> iterTys, bool isMm) {
             if (iterTys.size() < 1 || iterTys.size() > 3)
             {
                 if (isMm)
@@ -709,7 +704,7 @@ struct TypeChecker2
             }
 
             for (size_t i = 0; i < std::min(expectedVariableTypes.head.size(), variableTypes.size()); ++i)
-                reportErrors(tryUnify(scope, forInStatement->vars.data[i]->location, variableTypes[i], expectedVariableTypes.head[i]));
+                testIsSubtype(variableTypes[i], expectedVariableTypes.head[i], forInStatement->vars.data[i]->location);
 
             // nextFn is going to be invoked with (arrayTy, startIndexTy)
 
@@ -753,13 +748,13 @@ struct TypeChecker2
             if (iterTys.size() >= 2 && flattenedArgTypes.head.size() > 0)
             {
                 size_t valueIndex = forInStatement->values.size > 1 ? 1 : 0;
-                reportErrors(tryUnify(scope, forInStatement->values.data[valueIndex]->location, iterTys[1], flattenedArgTypes.head[0]));
+                testIsSubtype(iterTys[1], flattenedArgTypes.head[0], forInStatement->values.data[valueIndex]->location);
             }
 
             if (iterTys.size() == 3 && flattenedArgTypes.head.size() > 1)
             {
                 size_t valueIndex = forInStatement->values.size > 2 ? 2 : 0;
-                reportErrors(tryUnify(scope, forInStatement->values.data[valueIndex]->location, iterTys[2], flattenedArgTypes.head[1]));
+                testIsSubtype(iterTys[2], flattenedArgTypes.head[1], forInStatement->values.data[valueIndex]->location);
             }
         };
 
@@ -791,9 +786,9 @@ struct TypeChecker2
         {
             if ((forInStatement->vars.size == 1 || forInStatement->vars.size == 2) && ttv->indexer)
             {
-                reportErrors(tryUnify(scope, forInStatement->vars.data[0]->location, variableTypes[0], ttv->indexer->indexType));
+                testIsSubtype(variableTypes[0], ttv->indexer->indexType, forInStatement->vars.data[0]->location);
                 if (variableTypes.size() == 2)
-                    reportErrors(tryUnify(scope, forInStatement->vars.data[1]->location, variableTypes[1], ttv->indexer->indexResultType));
+                    testIsSubtype(variableTypes[1], ttv->indexer->indexResultType, forInStatement->vars.data[1]->location);
             }
             else
                 reportError(GenericError{"Cannot iterate over a table without indexer"}, forInStatement->values.data[0]->location);
@@ -816,7 +811,7 @@ struct TypeChecker2
                 if (const FunctionType* iterMmFtv = get<FunctionType>(*instantiatedIterMmTy))
                 {
                     TypePackId argPack = arena.addTypePack({iteratorTy});
-                    reportErrors(tryUnify(scope, forInStatement->values.data[0]->location, argPack, iterMmFtv->argTypes));
+                    testIsSubtype(argPack, iterMmFtv->argTypes, forInStatement->values.data[0]->location);
 
                     TypePack mmIteratorTypes = extendTypePack(arena, builtinTypes, iterMmFtv->retTypes, 3);
 
@@ -873,6 +868,22 @@ struct TypeChecker2
         }
     }
 
+    std::optional<TypeId> getBindingType(AstExpr* expr)
+    {
+        if (auto localExpr = expr->as<AstExprLocal>())
+        {
+            Scope* s = stack.back();
+            return s->lookup(localExpr->local);
+        }
+        else if (auto globalExpr = expr->as<AstExprGlobal>())
+        {
+            Scope* s = stack.back();
+            return s->lookup(globalExpr->name);
+        }
+        else
+            return std::nullopt;
+    }
+
     void visit(AstStatAssign* assign)
     {
         size_t count = std::min(assign->vars.size, assign->values.size);
@@ -890,11 +901,14 @@ struct TypeChecker2
             if (get<NeverType>(lhsType))
                 continue;
 
+            bool ok = testIsSubtype(rhsType, lhsType, rhs->location);
 
-            if (!isSubtype(rhsType, lhsType, stack.back()) &&
-                !isErrorSuppressing(assign->vars.data[i]->location, lhsType, assign->values.data[i]->location, rhsType))
+            // If rhsType </: lhsType, then it's not useful to also report that rhsType </: bindingType
+            if (ok)
             {
-                reportError(TypeMismatch{lhsType, rhsType}, rhs->location);
+                std::optional<TypeId> bindingType = getBindingType(lhs);
+                if (bindingType)
+                    testIsSubtype(rhsType, *bindingType, rhs->location);
             }
         }
     }
@@ -905,7 +919,7 @@ struct TypeChecker2
         TypeId resultTy = visit(&fake, stat);
         TypeId varTy = lookupType(stat->var);
 
-        reportErrors(tryUnify(stack.back(), stat->location, resultTy, varTy));
+        testIsSubtype(resultTy, varTy, stat->location);
     }
 
     void visit(AstStatFunction* stat)
@@ -1025,34 +1039,38 @@ struct TypeChecker2
 
     void visit(AstExprConstantNil* expr)
     {
-        NotNull<Scope> scope = stack.back();
         TypeId actualType = lookupType(expr);
         TypeId expectedType = builtinTypes->nilType;
-        LUAU_ASSERT(isSubtype(actualType, expectedType, scope));
+
+        SubtypingResult r = subtyping->isSubtype(actualType, expectedType);
+        LUAU_ASSERT(r.isSubtype || r.isErrorSuppressing);
     }
 
     void visit(AstExprConstantBool* expr)
     {
-        NotNull<Scope> scope = stack.back();
         TypeId actualType = lookupType(expr);
         TypeId expectedType = builtinTypes->booleanType;
-        LUAU_ASSERT(isSubtype(actualType, expectedType, scope));
+
+        SubtypingResult r = subtyping->isSubtype(actualType, expectedType);
+        LUAU_ASSERT(r.isSubtype || r.isErrorSuppressing);
     }
 
     void visit(AstExprConstantNumber* expr)
     {
-        NotNull<Scope> scope = stack.back();
         TypeId actualType = lookupType(expr);
         TypeId expectedType = builtinTypes->numberType;
-        LUAU_ASSERT(isSubtype(actualType, expectedType, scope));
+
+        SubtypingResult r = subtyping->isSubtype(actualType, expectedType);
+        LUAU_ASSERT(r.isSubtype || r.isErrorSuppressing);
     }
 
     void visit(AstExprConstantString* expr)
     {
-        NotNull<Scope> scope = stack.back();
         TypeId actualType = lookupType(expr);
         TypeId expectedType = builtinTypes->stringType;
-        LUAU_ASSERT(isSubtype(actualType, expectedType, scope));
+
+        SubtypingResult r = subtyping->isSubtype(actualType, expectedType);
+        LUAU_ASSERT(r.isSubtype || r.isErrorSuppressing);
     }
 
     void visit(AstExprLocal* expr)
@@ -1079,10 +1097,24 @@ struct TypeChecker2
 
         TypeId* originalCallTy = module->astOriginalCallTypes.find(call);
         TypeId* selectedOverloadTy = module->astOverloadResolvedTypes.find(call);
-        if (!originalCallTy && !selectedOverloadTy)
+        if (!originalCallTy)
             return;
 
-        TypeId fnTy = follow(selectedOverloadTy ? *selectedOverloadTy : *originalCallTy);
+        TypeId fnTy = *originalCallTy;
+        if (selectedOverloadTy)
+        {
+            SubtypingResult result = subtyping->isSubtype(*originalCallTy, *selectedOverloadTy);
+            if (result.isSubtype)
+                fnTy = *selectedOverloadTy;
+
+            if (result.normalizationTooComplex)
+            {
+                reportError(NormalizationTooComplex{}, call->func->location);
+                return;
+            }
+        }
+        fnTy = follow(fnTy);
+
         if (get<AnyType>(fnTy) || get<ErrorType>(fnTy) || get<NeverType>(fnTy))
             return;
         else if (isOptional(fnTy))
@@ -1134,6 +1166,8 @@ struct TypeChecker2
             NotNull{&normalizer},
             NotNull{stack.back()},
             ice,
+            limits,
+            subtyping,
             call->location,
         };
 
@@ -1225,6 +1259,8 @@ struct TypeChecker2
         NotNull<Normalizer> normalizer;
         NotNull<Scope> scope;
         NotNull<InternalErrorReporter> ice;
+        NotNull<TypeCheckLimits> limits;
+        NotNull<Subtyping> subtyping;
         Location callLoc;
 
         std::vector<TypeId> ok;
@@ -1234,32 +1270,38 @@ struct TypeChecker2
         InsertionOrderedMap<TypeId, std::pair<Analysis, size_t>> resolution;
 
     private:
-        std::optional<ErrorVec> tryUnify(const Location& location, TypeId subTy, TypeId superTy, const LiteralProperties* literalProperties = nullptr)
+        std::optional<ErrorVec> testIsSubtype(const Location& location, TypeId subTy, TypeId superTy)
         {
-            Unifier u{normalizer, scope, location, Covariant};
-            u.ctx = CountMismatch::Arg;
-            u.hideousFixMeGenericsAreActuallyFree = true;
-            u.enableNewSolver();
-            u.tryUnify(subTy, superTy, /*isFunctionCall*/ false, /*isIntersection*/ false, literalProperties);
+            auto r = subtyping->isSubtype(subTy, superTy);
+            ErrorVec errors;
 
-            if (u.errors.empty())
+            if (r.normalizationTooComplex)
+                errors.push_back(TypeError{location, NormalizationTooComplex{}});
+
+            if (!r.isSubtype && !r.isErrorSuppressing)
+                errors.push_back(TypeError{location, TypeMismatch{superTy, subTy}});
+
+            if (errors.empty())
                 return std::nullopt;
 
-            return std::move(u.errors);
+            return errors;
         }
 
-        std::optional<ErrorVec> tryUnify(const Location& location, TypePackId subTy, TypePackId superTy)
+        std::optional<ErrorVec> testIsSubtype(const Location& location, TypePackId subTy, TypePackId superTy)
         {
-            Unifier u{normalizer, scope, location, Covariant};
-            u.ctx = CountMismatch::Arg;
-            u.hideousFixMeGenericsAreActuallyFree = true;
-            u.enableNewSolver();
-            u.tryUnify(subTy, superTy);
+            auto r = subtyping->isSubtype(subTy, superTy);
+            ErrorVec errors;
 
-            if (u.errors.empty())
+            if (r.normalizationTooComplex)
+                errors.push_back(TypeError{location, NormalizationTooComplex{}});
+
+            if (!r.isSubtype && !r.isErrorSuppressing)
+                errors.push_back(TypeError{location, TypePackMismatch{superTy, subTy}});
+
+            if (errors.empty())
                 return std::nullopt;
 
-            return std::move(u.errors);
+            return errors;
         }
 
         std::pair<Analysis, ErrorVec> checkOverload(
@@ -1294,44 +1336,16 @@ struct TypeChecker2
             else if (auto assertion = expr->as<AstExprTypeAssertion>())
                 return isLiteral(assertion->expr);
 
-            return
-                expr->is<AstExprConstantNil>() ||
-                expr->is<AstExprConstantBool>() ||
-                expr->is<AstExprConstantNumber>() ||
-                expr->is<AstExprConstantString>() ||
-                expr->is<AstExprFunction>() ||
-                expr->is<AstExprTable>();
-        }
-
-        static std::unique_ptr<LiteralProperties> buildLiteralPropertiesSet(AstExpr* expr)
-        {
-            const AstExprTable* table = expr->as<AstExprTable>();
-            if (!table)
-                return nullptr;
-
-            std::unique_ptr<LiteralProperties> result = std::make_unique<LiteralProperties>(Name{});
-
-            for (const AstExprTable::Item& item : table->items)
-            {
-                if (item.kind != AstExprTable::Item::Record)
-                    continue;
-
-                AstExprConstantString* keyExpr = item.key->as<AstExprConstantString>();
-                LUAU_ASSERT(keyExpr);
-
-                if (isLiteral(item.value))
-                    result->insert(Name{keyExpr->value.begin(), keyExpr->value.end()});
-            }
-
-            return result;
+            return expr->is<AstExprConstantNil>() || expr->is<AstExprConstantBool>() || expr->is<AstExprConstantNumber>() ||
+                   expr->is<AstExprConstantString>() || expr->is<AstExprFunction>() || expr->is<AstExprTable>();
         }
 
         LUAU_NOINLINE
         std::pair<Analysis, ErrorVec> checkOverload_(
             TypeId fnTy, const FunctionType* fn, const TypePack* args, AstExpr* fnExpr, const std::vector<AstExpr*>* argExprs)
         {
-            TxnLog fake;
-            FamilyGraphReductionResult result = reduceFamilies(fnTy, callLoc, arena, builtinTypes, scope, normalizer, &fake, /*force=*/true);
+            FamilyGraphReductionResult result =
+                reduceFamilies(fnTy, callLoc, TypeFamilyContext{arena, builtinTypes, scope, normalizer, ice, limits}, /*force=*/true);
             if (!result.errors.empty())
                 return {OverloadIsNonviable, result.errors};
 
@@ -1350,9 +1364,7 @@ struct TypeChecker2
                 TypeId argTy = args->head[argOffset];
                 AstExpr* argLoc = argExprs->at(argOffset >= argExprs->size() ? argExprs->size() - 1 : argOffset);
 
-                std::unique_ptr<LiteralProperties> literalProperties{buildLiteralPropertiesSet(argLoc)};
-
-                if (auto errors = tryUnify(argLoc->location, argTy, paramTy, literalProperties.get()))
+                if (auto errors = testIsSubtype(argLoc->location, argTy, paramTy))
                 {
                     // Since we're stopping right here, we need to decide if this is a nonviable overload or if there is an arity mismatch.
                     // If it's a nonviable overload, then we need to keep going to get all type errors.
@@ -1382,7 +1394,7 @@ struct TypeChecker2
                 }
                 else if (auto vtp = get<VariadicTypePack>(follow(paramIter.tail())))
                 {
-                    if (auto errors = tryUnify(argExpr->location, args->head[argOffset], vtp->ty))
+                    if (auto errors = testIsSubtype(argExpr->location, args->head[argOffset], vtp->ty))
                         argumentErrors.insert(argumentErrors.end(), errors->begin(), errors->end());
                 }
                 else if (get<GenericTypePack>(follow(paramIter.tail())))
@@ -1401,7 +1413,7 @@ struct TypeChecker2
                 {
                     AstExpr* argExpr = argExprs->at(argExprs->size() - 1);
 
-                    if (auto errors = tryUnify(argExpr->location, vtp->ty, *paramIter))
+                    if (auto errors = testIsSubtype(argExpr->location, vtp->ty, *paramIter))
                         argumentErrors.insert(argumentErrors.end(), errors->begin(), errors->end());
                 }
                 else if (!isOptional(*paramIter))
@@ -1422,11 +1434,11 @@ struct TypeChecker2
             LUAU_ASSERT(argOffset == args->head.size());
 
             const Location argLoc = argExprs->empty() ? Location{} // TODO
-                : argExprs->at(argExprs->size() - 1)->location;
+                                                      : argExprs->at(argExprs->size() - 1)->location;
 
             if (paramIter.tail() && args->tail)
             {
-                if (auto errors = tryUnify(argLoc, *args->tail, *paramIter.tail()))
+                if (auto errors = testIsSubtype(argLoc, *args->tail, *paramIter.tail()))
                     argumentErrors.insert(argumentErrors.end(), errors->begin(), errors->end());
             }
             else if (paramIter.tail())
@@ -1591,20 +1603,18 @@ struct TypeChecker2
         visit(indexExpr->expr, ValueContext::RValue);
         visit(indexExpr->index, ValueContext::RValue);
 
-        NotNull<Scope> scope = stack.back();
-
         TypeId exprType = lookupType(indexExpr->expr);
         TypeId indexType = lookupType(indexExpr->index);
 
         if (auto tt = get<TableType>(exprType))
         {
             if (tt->indexer)
-                reportErrors(tryUnify(scope, indexExpr->index->location, indexType, tt->indexer->indexType));
+                testIsSubtype(indexType, tt->indexer->indexType, indexExpr->index->location);
             else
                 reportError(CannotExtendTable{exprType, CannotExtendTable::Indexer, "indexer??"}, indexExpr->location);
         }
         else if (auto cls = get<ClassType>(exprType); cls && cls->indexer)
-            reportErrors(tryUnify(scope, indexExpr->index->location, indexType, cls->indexer->indexType));
+            testIsSubtype(indexType, cls->indexer->indexType, indexExpr->index->location);
         else if (get<UnionType>(exprType) && isOptional(exprType))
             reportError(OptionalValueAccess{exprType}, indexExpr->location);
     }
@@ -1655,11 +1665,7 @@ struct TypeChecker2
                     TypeId inferredArgTy = *argIt;
                     TypeId annotatedArgTy = lookupAnnotation(arg->annotation);
 
-                    if (!isSubtype(inferredArgTy, annotatedArgTy, stack.back()) &&
-                        !isErrorSuppressing(arg->location, inferredArgTy, arg->annotation->location, annotatedArgTy))
-                    {
-                        reportError(TypeMismatch{inferredArgTy, annotatedArgTy}, arg->location);
-                    }
+                    testIsSubtype(inferredArgTy, annotatedArgTy, arg->location);
                 }
 
                 ++argIt;
@@ -1686,7 +1692,6 @@ struct TypeChecker2
     {
         visit(expr->expr, ValueContext::RValue);
 
-        NotNull<Scope> scope = stack.back();
         TypeId operandType = lookupType(expr->expr);
         TypeId resultType = lookupType(expr);
 
@@ -1704,7 +1709,7 @@ struct TypeChecker2
                     {
                         if (expr->op == AstExprUnary::Op::Len)
                         {
-                            reportErrors(tryUnify(scope, expr->location, follow(*ret), builtinTypes->numberType));
+                            testIsSubtype(follow(*ret), builtinTypes->numberType, expr->location);
                         }
                     }
                     else
@@ -1724,12 +1729,9 @@ struct TypeChecker2
 
                     TypeId expectedFunction = testArena.addType(FunctionType{expectedArgs, expectedRet});
 
-                    ErrorVec errors = tryUnify(scope, expr->location, *mm, expectedFunction);
-                    if (!errors.empty() && !isErrorSuppressing(expr->expr->location, *firstArg, expr->expr->location, operandType))
-                    {
-                        reportError(TypeMismatch{*firstArg, operandType}, expr->location);
+                    bool success = testIsSubtype(*mm, expectedFunction, expr->location);
+                    if (!success)
                         return;
-                    }
                 }
 
                 return;
@@ -1755,7 +1757,7 @@ struct TypeChecker2
         }
         else if (expr->op == AstExprUnary::Op::Minus)
         {
-            reportErrors(tryUnify(scope, expr->location, operandType, builtinTypes->numberType));
+            testIsSubtype(operandType, builtinTypes->numberType, expr->location);
         }
         else if (expr->op == AstExprUnary::Op::Not)
         {
@@ -1779,7 +1781,7 @@ struct TypeChecker2
 
         TypeId leftType = lookupType(expr->left);
         TypeId rightType = lookupType(expr->right);
-        TypeId expectedResult = lookupType(expr);
+        TypeId expectedResult = follow(lookupType(expr));
 
         if (get<TypeFamilyInstanceType>(expectedResult))
         {
@@ -1817,6 +1819,8 @@ struct TypeChecker2
         bool typesHaveIntersection = normalizer.isIntersectionInhabited(leftType, rightType);
         if (auto it = kBinaryOpMetamethods.find(expr->op); it != kBinaryOpMetamethods.end())
         {
+            LUAU_ASSERT(FFlag::LuauFloorDivision || expr->op != AstExprBinary::Op::FloorDiv);
+
             std::optional<TypeId> leftMt = getMetatable(leftType, builtinTypes);
             std::optional<TypeId> rightMt = getMetatable(rightType, builtinTypes);
             bool matches = leftMt == rightMt;
@@ -1913,7 +1917,7 @@ struct TypeChecker2
 
                     TypeId expectedTy = testArena.addType(FunctionType(expectedArgs, expectedRets));
 
-                    reportErrors(tryUnify(scope, expr->location, follow(*mm), expectedTy));
+                    testIsSubtype(follow(*mm), expectedTy, expr->location);
 
                     std::optional<TypeId> ret = first(ftv->retTypes);
                     if (ret)
@@ -2002,15 +2006,18 @@ struct TypeChecker2
         case AstExprBinary::Op::Sub:
         case AstExprBinary::Op::Mul:
         case AstExprBinary::Op::Div:
+        case AstExprBinary::Op::FloorDiv:
         case AstExprBinary::Op::Pow:
         case AstExprBinary::Op::Mod:
-            reportErrors(tryUnify(scope, expr->left->location, leftType, builtinTypes->numberType));
-            reportErrors(tryUnify(scope, expr->right->location, rightType, builtinTypes->numberType));
+            LUAU_ASSERT(FFlag::LuauFloorDivision || expr->op != AstExprBinary::Op::FloorDiv);
+
+            testIsSubtype(leftType, builtinTypes->numberType, expr->left->location);
+            testIsSubtype(rightType, builtinTypes->numberType, expr->right->location);
 
             return builtinTypes->numberType;
         case AstExprBinary::Op::Concat:
-            reportErrors(tryUnify(scope, expr->left->location, leftType, builtinTypes->stringType));
-            reportErrors(tryUnify(scope, expr->right->location, rightType, builtinTypes->stringType));
+            testIsSubtype(leftType, builtinTypes->stringType, expr->left->location);
+            testIsSubtype(rightType, builtinTypes->stringType, expr->right->location);
 
             return builtinTypes->stringType;
         case AstExprBinary::Op::CompareGe:
@@ -2023,12 +2030,12 @@ struct TypeChecker2
 
             if (normLeft && normLeft->isExactlyNumber())
             {
-                reportErrors(tryUnify(scope, expr->right->location, rightType, builtinTypes->numberType));
+                testIsSubtype(rightType, builtinTypes->numberType, expr->right->location);
                 return builtinTypes->numberType;
             }
             else if (normLeft && normLeft->isSubtypeOfString())
             {
-                reportErrors(tryUnify(scope, expr->right->location, rightType, builtinTypes->stringType));
+                testIsSubtype(rightType, builtinTypes->stringType, expr->right->location);
                 return builtinTypes->stringType;
             }
             else
@@ -2063,10 +2070,10 @@ struct TypeChecker2
         TypeId computedType = lookupType(expr->expr);
 
         // Note: As an optimization, we try 'number <: number | string' first, as that is the more likely case.
-        if (isSubtype(annotationType, computedType, stack.back(), true))
+        if (auto r = subtyping->isSubtype(annotationType, computedType); r.isSubtype || r.isErrorSuppressing)
             return;
 
-        if (isSubtype(computedType, annotationType, stack.back(), true))
+        if (auto r = subtyping->isSubtype(computedType, annotationType); r.isSubtype || r.isErrorSuppressing)
             return;
 
         reportError(TypesAreUnrelated{computedType, annotationType}, expr->location);
@@ -2406,33 +2413,50 @@ struct TypeChecker2
         }
     }
 
-    template<typename TID>
-    bool isSubtype(TID subTy, TID superTy, NotNull<Scope> scope, bool genericsOkay = false)
+    bool testIsSubtype(TypeId subTy, TypeId superTy, Location location)
     {
-        TypeArena arena;
-        Unifier u{NotNull{&normalizer}, scope, Location{}, Covariant};
-        u.hideousFixMeGenericsAreActuallyFree = genericsOkay;
-        u.enableNewSolver();
+        SubtypingResult r = subtyping->isSubtype(subTy, superTy);
 
-        u.tryUnify(subTy, superTy);
-        const bool ok = u.errors.empty() && u.log.empty();
-        return ok;
+        if (r.normalizationTooComplex)
+            reportError(NormalizationTooComplex{}, location);
+
+        if (!r.isSubtype && !r.isErrorSuppressing)
+        {
+            if (r.reasoning)
+            {
+                std::optional<TypeOrPack> subLeaf = traverse(subTy, r.reasoning->subPath, builtinTypes);
+                std::optional<TypeOrPack> superLeaf = traverse(superTy, r.reasoning->superPath, builtinTypes);
+
+                if (!subLeaf || !superLeaf)
+                    ice->ice("Subtyping test returned a reasoning with an invalid path", location);
+
+                if (!get2<TypeId, TypeId>(*subLeaf, *superLeaf) && !get2<TypePackId, TypePackId>(*subLeaf, *superLeaf))
+                    ice->ice("Subtyping test returned a reasoning where one path ends at a type and the other ends at a pack.", location);
+
+                std::string reason = "type " + toString(subTy) + toString(r.reasoning->subPath) + " (" + toString(*subLeaf) +
+                                     ") is not a subtype of " + toString(superTy) + toString(r.reasoning->superPath) + " (" + toString(*superLeaf) +
+                                     ")";
+
+                reportError(TypeMismatch{superTy, subTy, reason}, location);
+            }
+            else
+                reportError(TypeMismatch{superTy, subTy}, location);
+        }
+
+        return r.isSubtype;
     }
 
-    template<typename TID>
-    ErrorVec tryUnify(NotNull<Scope> scope, const Location& location, TID subTy, TID superTy, CountMismatch::Context context = CountMismatch::Arg,
-        bool genericsOkay = false)
+    bool testIsSubtype(TypePackId subTy, TypePackId superTy, Location location)
     {
-        Unifier u{NotNull{&normalizer}, scope, location, Covariant};
-        u.ctx = context;
-        u.hideousFixMeGenericsAreActuallyFree = genericsOkay;
-        u.enableNewSolver();
-        u.tryUnify(subTy, superTy);
+        SubtypingResult r = subtyping->isSubtype(subTy, superTy);
 
-        if (isErrorSuppressing(location, subTy, location, superTy))
-            return {};
+        if (r.normalizationTooComplex)
+            reportError(NormalizationTooComplex{}, location);
 
-        return std::move(u.errors);
+        if (!r.isSubtype && !r.isErrorSuppressing)
+            reportError(TypePackMismatch{superTy, subTy}, location);
+
+        return r.isSubtype;
     }
 
     void reportError(TypeErrorData data, const Location& location)
@@ -2680,8 +2704,8 @@ struct TypeChecker2
     }
 };
 
-void check(
-    NotNull<BuiltinTypes> builtinTypes, NotNull<UnifierSharedState> unifierState, NotNull<TypeCheckLimits> limits, DcrLogger* logger, const SourceModule& sourceModule, Module* module)
+void check(NotNull<BuiltinTypes> builtinTypes, NotNull<UnifierSharedState> unifierState, NotNull<TypeCheckLimits> limits, DcrLogger* logger,
+    const SourceModule& sourceModule, Module* module)
 {
     TypeChecker2 typeChecker{builtinTypes, unifierState, limits, logger, &sourceModule, module};
 

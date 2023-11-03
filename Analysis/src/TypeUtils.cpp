@@ -1,6 +1,7 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/TypeUtils.h"
 
+#include "Luau/Common.h"
 #include "Luau/Normalize.h"
 #include "Luau/Scope.h"
 #include "Luau/ToString.h"
@@ -326,7 +327,7 @@ ErrorSuppression shouldSuppressErrors(NotNull<Normalizer> normalizer, TypePackId
     }
 
     // check the tail if we have one and it's finite
-    if (tail && finite(*tail))
+    if (tail && tp != tail && finite(*tail))
         return shouldSuppressErrors(normalizer, *tail);
 
     return ErrorSuppression::DoNotSuppress;

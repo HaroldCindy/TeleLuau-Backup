@@ -27,6 +27,11 @@ static const char* setccTextForCondition[] = {"seto", "setno", "setc", "setnc", 
     "setge", "setnb", "setnbe", "setna", "setnae", "setne", "setnl", "setnle", "setng", "setnge", "setz", "setnz", "setp", "setnp"};
 static_assert(sizeof(setccTextForCondition) / sizeof(setccTextForCondition[0]) == size_t(ConditionX64::Count), "all conditions have to be covered");
 
+static const char* cmovTextForCondition[] = {"cmovo", "cmovno", "cmovc", "cmovnc", "cmovb", "cmovbe", "cmova", "cmovae", "cmove", "cmovl", "cmovle",
+    "cmovg", "cmovge", "cmovnb", "cmovnbe", "cmovna", "cmovnae", "cmovne", "cmovnl", "cmovnle", "cmovng", "cmovnge", "cmovz", "cmovnz", "cmovp",
+    "cmovnp"};
+static_assert(sizeof(cmovTextForCondition) / sizeof(cmovTextForCondition[0]) == size_t(ConditionX64::Count), "all conditions have to be covered");
+
 #define OP_PLUS_REG(op, reg) ((op) + (reg & 0x7))
 #define OP_PLUS_CC(op, cc) ((op) + uint8_t(cc))
 
@@ -404,6 +409,20 @@ void AssemblyBuilderX64::setcc(ConditionX64 cond, OperandX64 op)
     commit();
 }
 
+void AssemblyBuilderX64::cmov(ConditionX64 cond, RegisterX64 lhs, OperandX64 rhs)
+{
+    SizeX64 size = rhs.cat == CategoryX64::reg ? rhs.base.size : rhs.memSize;
+    LUAU_ASSERT(size != SizeX64::byte && size == lhs.size);
+
+    if (logText)
+        log(cmovTextForCondition[size_t(cond)], lhs, rhs);
+    placeRex(lhs, rhs);
+    place(0x0f);
+    place(0x40 | codeForCondition[size_t(cond)]);
+    placeRegAndModRegMem(lhs, rhs);
+    commit();
+}
+
 void AssemblyBuilderX64::jcc(ConditionX64 cond, Label& label)
 {
     placeJcc(jccTextForCondition[size_t(cond)], label, codeForCondition[size_t(cond)]);
@@ -519,6 +538,19 @@ void AssemblyBuilderX64::bsf(RegisterX64 dst, OperandX64 src)
     place(0x0f);
     place(0xbc);
     placeRegAndModRegMem(dst, src);
+    commit();
+}
+
+void AssemblyBuilderX64::bswap(RegisterX64 dst)
+{
+    if (logText)
+        log("bswap", dst);
+
+    LUAU_ASSERT(dst.size == SizeX64::dword || dst.size == SizeX64::qword);
+
+    placeRex(dst);
+    place(0x0f);
+    place(OP_PLUS_REG(0xc8, dst.index));
     commit();
 }
 
@@ -1532,11 +1564,16 @@ void AssemblyBuilderX64::log(OperandX64 op)
     case CategoryX64::mem:
         if (op.base == rip)
         {
-            logAppend("%s ptr [.start%+d]", getSizeName(op.memSize), op.imm);
+            if (op.memSize != SizeX64::none)
+                logAppend("%s ptr ", getSizeName(op.memSize));
+            logAppend("[.start%+d]", op.imm);
             return;
         }
 
-        logAppend("%s ptr [", getSizeName(op.memSize));
+        if (op.memSize != SizeX64::none)
+            logAppend("%s ptr ", getSizeName(op.memSize));
+
+        logAppend("[");
 
         if (op.base != noreg)
             logAppend("%s", getRegisterName(op.base));

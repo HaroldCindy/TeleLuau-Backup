@@ -98,6 +98,8 @@
  */
 #if defined(__APPLE__)
 #define ABISWITCH(x64, ms32, gcc32) (sizeof(void*) == 8 ? x64 : gcc32)
+#elif defined(__i386__) && defined(__MINGW32__) && !defined(__MINGW64__)
+#define ABISWITCH(x64, ms32, gcc32) (ms32)
 #elif defined(__i386__) && !defined(_MSC_VER)
 #define ABISWITCH(x64, ms32, gcc32) (gcc32)
 #else
@@ -117,6 +119,7 @@ static_assert(offsetof(TString, data) == ABISWITCH(24, 20, 20), "size mismatch f
 static_assert(offsetof(Udata, data) == ABISWITCH(16, 16, 12), "size mismatch for userdata header");
 // Ares: we add a pointer, changing table sizes.
 static_assert(sizeof(Table) == ABISWITCH(56, 36, 36), "size mismatch for table header");
+static_assert(offsetof(Buffer, data) == ABISWITCH(8, 8, 8), "size mismatch for buffer header");
 
 const size_t kSizeClasses = LUA_SIZECLASSES;
 const size_t kMaxSmallSize = 512;

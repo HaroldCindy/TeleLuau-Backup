@@ -43,10 +43,26 @@ static void logFunctionHeader(AssemblyBuilder& build, Proto* proto)
 }
 
 template<typename AssemblyBuilder>
-static std::string getAssemblyImpl(AssemblyBuilder& build, const TValue* func, AssemblyOptions options)
+static std::string getAssemblyImpl(AssemblyBuilder& build, const TValue* func, AssemblyOptions options, LoweringStats* stats)
 {
+    Proto* root = clvalue(func)->l.p;
+
+    if ((options.flags & CodeGen_OnlyNativeModules) != 0 && (root->flags & LPF_NATIVE_MODULE) == 0)
+        return std::string();
+
     std::vector<Proto*> protos;
-    gatherFunctions(protos, clvalue(func)->l.p);
+    gatherFunctions(protos, root, options.flags);
+
+    protos.erase(std::remove_if(protos.begin(), protos.end(), [](Proto* p) { return p == nullptr; }), protos.end());
+
+    if (stats)
+        stats->totalFunctions += unsigned(protos.size());
+
+    if (protos.empty())
+    {
+        build.finalize(); // to avoid assertion in AssemblyBuilder dtor
+        return std::string();
+    }
 
     ModuleHelpers helpers;
     assembleHelpers(build, helpers);
@@ -58,23 +74,25 @@ static std::string getAssemblyImpl(AssemblyBuilder& build, const TValue* func, A
     }
 
     for (Proto* p : protos)
-        if (p)
+    {
+        IrBuilder ir;
+        ir.buildFunctionIr(p);
+
+        if (options.includeAssembly || options.includeIr)
+            logFunctionHeader(build, p);
+
+        if (!lowerFunction(ir, build, helpers, p, options, stats))
         {
-            IrBuilder ir;
-            ir.buildFunctionIr(p);
-
-            if (options.includeAssembly || options.includeIr)
-                logFunctionHeader(build, p);
-
-            if (!lowerFunction(ir, build, helpers, p, options))
-            {
-                if (build.logText)
-                    build.logAppend("; skipping (can't lower)\n");
-            }
-
             if (build.logText)
-                build.logAppend("\n");
+                build.logAppend("; skipping (can't lower)\n");
+
+            if (stats)
+                stats->skippedFunctions += 1;
         }
+
+        if (build.logText)
+            build.logAppend("\n");
+    }
 
     if (!build.finalize())
         return std::string();
@@ -90,7 +108,7 @@ static std::string getAssemblyImpl(AssemblyBuilder& build, const TValue* func, A
 unsigned int getCpuFeaturesA64();
 #endif
 
-std::string getAssembly(lua_State* L, int idx, AssemblyOptions options)
+std::string getAssembly(lua_State* L, int idx, AssemblyOptions options, LoweringStats* stats)
 {
     LUAU_ASSERT(lua_isLfunction(L, idx));
     const TValue* func = luaA_toobject(L, idx);
@@ -106,35 +124,35 @@ std::string getAssembly(lua_State* L, int idx, AssemblyOptions options)
         X64::AssemblyBuilderX64 build(/* logText= */ options.includeAssembly);
 #endif
 
-        return getAssemblyImpl(build, func, options);
+        return getAssemblyImpl(build, func, options, stats);
     }
 
     case AssemblyOptions::A64:
     {
         A64::AssemblyBuilderA64 build(/* logText= */ options.includeAssembly, /* features= */ A64::Feature_JSCVT);
 
-        return getAssemblyImpl(build, func, options);
+        return getAssemblyImpl(build, func, options, stats);
     }
 
     case AssemblyOptions::A64_NoFeatures:
     {
         A64::AssemblyBuilderA64 build(/* logText= */ options.includeAssembly, /* features= */ 0);
 
-        return getAssemblyImpl(build, func, options);
+        return getAssemblyImpl(build, func, options, stats);
     }
 
     case AssemblyOptions::X64_Windows:
     {
         X64::AssemblyBuilderX64 build(/* logText= */ options.includeAssembly, X64::ABIX64::Windows);
 
-        return getAssemblyImpl(build, func, options);
+        return getAssemblyImpl(build, func, options, stats);
     }
 
     case AssemblyOptions::X64_SystemV:
     {
         X64::AssemblyBuilderX64 build(/* logText= */ options.includeAssembly, X64::ABIX64::SystemV);
 
-        return getAssemblyImpl(build, func, options);
+        return getAssemblyImpl(build, func, options, stats);
     }
 
     default:

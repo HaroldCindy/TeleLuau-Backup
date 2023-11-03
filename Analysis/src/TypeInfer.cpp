@@ -36,11 +36,13 @@ LUAU_FASTFLAGVARIABLE(DebugLuauFreezeDuringUnification, false)
 LUAU_FASTFLAGVARIABLE(DebugLuauSharedSelf, false)
 LUAU_FASTFLAG(LuauInstantiateInSubtyping)
 LUAU_FASTFLAGVARIABLE(LuauAllowIndexClassParameters, false)
-LUAU_FASTFLAGVARIABLE(LuauFixCyclicModuleExports, false)
 LUAU_FASTFLAG(LuauOccursIsntAlwaysFailure)
 LUAU_FASTFLAGVARIABLE(LuauTinyControlFlowAnalysis, false)
+LUAU_FASTFLAGVARIABLE(LuauLoopControlFlowAnalysis, false)
+LUAU_FASTFLAGVARIABLE(LuauVariadicOverloadFix, false)
 LUAU_FASTFLAGVARIABLE(LuauAlwaysCommitInferencesOfFunctionCalls, false)
 LUAU_FASTFLAG(LuauParseDeclareClassIndexer)
+LUAU_FASTFLAG(LuauFloorDivision);
 
 namespace Luau
 {
@@ -201,27 +203,13 @@ static bool isMetamethod(const Name& name)
 {
     return name == "__index" || name == "__newindex" || name == "__call" || name == "__concat" || name == "__unm" || name == "__add" ||
            name == "__sub" || name == "__mul" || name == "__div" || name == "__mod" || name == "__pow" || name == "__tostring" ||
-           name == "__metatable" || name == "__eq" || name == "__lt" || name == "__le" || name == "__mode" || name == "__iter" || name == "__len";
+           name == "__metatable" || name == "__eq" || name == "__lt" || name == "__le" || name == "__mode" || name == "__iter" || name == "__len" ||
+           (FFlag::LuauFloorDivision && name == "__idiv");
 }
 
 size_t HashBoolNamePair::operator()(const std::pair<bool, Name>& pair) const
 {
     return std::hash<bool>()(pair.first) ^ std::hash<Name>()(pair.second);
-}
-
-GlobalTypes::GlobalTypes(NotNull<BuiltinTypes> builtinTypes)
-    : builtinTypes(builtinTypes)
-{
-    globalScope = std::make_shared<Scope>(globalTypes.addTypePack(TypePackVar{FreeTypePack{TypeLevel{}}}));
-
-    globalScope->addBuiltinTypeBinding("any", TypeFun{{}, builtinTypes->anyType});
-    globalScope->addBuiltinTypeBinding("nil", TypeFun{{}, builtinTypes->nilType});
-    globalScope->addBuiltinTypeBinding("number", TypeFun{{}, builtinTypes->numberType});
-    globalScope->addBuiltinTypeBinding("string", TypeFun{{}, builtinTypes->stringType});
-    globalScope->addBuiltinTypeBinding("boolean", TypeFun{{}, builtinTypes->booleanType});
-    globalScope->addBuiltinTypeBinding("thread", TypeFun{{}, builtinTypes->threadType});
-    globalScope->addBuiltinTypeBinding("unknown", TypeFun{{}, builtinTypes->unknownType});
-    globalScope->addBuiltinTypeBinding("never", TypeFun{{}, builtinTypes->neverType});
 }
 
 TypeChecker::TypeChecker(const ScopePtr& globalScope, ModuleResolver* resolver, NotNull<BuiltinTypes> builtinTypes, InternalErrorReporter* iceHandler)
@@ -363,11 +351,10 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStat& program)
         return check(scope, *while_);
     else if (auto repeat = program.as<AstStatRepeat>())
         return check(scope, *repeat);
-    else if (program.is<AstStatBreak>() || program.is<AstStatContinue>())
-    {
-        // Nothing to do
-        return ControlFlow::None;
-    }
+    else if (program.is<AstStatBreak>())
+        return FFlag::LuauLoopControlFlowAnalysis ? ControlFlow::Breaks : ControlFlow::None;
+    else if (program.is<AstStatContinue>())
+        return FFlag::LuauLoopControlFlowAnalysis ? ControlFlow::Continues : ControlFlow::None;
     else if (auto return_ = program.as<AstStatReturn>())
         return check(scope, *return_);
     else if (auto expr = program.as<AstStatExpr>())
@@ -765,12 +752,14 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStatIf& statement
         if (statement.elsebody)
             elsecf = check(elseScope, *statement.elsebody);
 
-        if (matches(thencf, ControlFlow::Returns | ControlFlow::Throws) && elsecf == ControlFlow::None)
+        if (thencf != ControlFlow::None && elsecf == ControlFlow::None)
             scope->inheritRefinements(elseScope);
-        else if (thencf == ControlFlow::None && matches(elsecf, ControlFlow::Returns | ControlFlow::Throws))
+        else if (thencf == ControlFlow::None && elsecf != ControlFlow::None)
             scope->inheritRefinements(thenScope);
 
-        if (matches(thencf, ControlFlow::Returns | ControlFlow::Throws) && matches(elsecf, ControlFlow::Returns | ControlFlow::Throws))
+        if (FFlag::LuauLoopControlFlowAnalysis && thencf == elsecf)
+            return thencf;
+        else if (matches(thencf, ControlFlow::Returns | ControlFlow::Throws) && matches(elsecf, ControlFlow::Returns | ControlFlow::Throws))
             return ControlFlow::Returns;
         else
             return ControlFlow::None;
@@ -1195,16 +1184,13 @@ ControlFlow TypeChecker::check(const ScopePtr& scope, const AstStatLocal& local)
                         scope->importedTypeBindings[name] = module->exportedTypeBindings;
                         scope->importedModules[name] = moduleInfo->name;
 
-                        if (FFlag::LuauFixCyclicModuleExports)
+                        // Imported types of requires that transitively refer to current module have to be replaced with 'any'
+                        for (const auto& [location, path] : requireCycles)
                         {
-                            // Imported types of requires that transitively refer to current module have to be replaced with 'any'
-                            for (const auto& [location, path] : requireCycles)
+                            if (!path.empty() && path.front() == moduleInfo->name)
                             {
-                                if (!path.empty() && path.front() == moduleInfo->name)
-                                {
-                                    for (auto& [name, tf] : scope->importedTypeBindings[name])
-                                        tf = TypeFun{{}, {}, anyType};
-                                }
+                                for (auto& [name, tf] : scope->importedTypeBindings[name])
+                                    tf = TypeFun{{}, {}, anyType};
                             }
                         }
                     }
@@ -2575,6 +2561,9 @@ std::string opToMetaTableEntry(const AstExprBinary::Op& op)
         return "__mul";
     case AstExprBinary::Div:
         return "__div";
+    case AstExprBinary::FloorDiv:
+        LUAU_ASSERT(FFlag::LuauFloorDivision);
+        return "__idiv";
     case AstExprBinary::Mod:
         return "__mod";
     case AstExprBinary::Pow:
@@ -3068,8 +3057,11 @@ TypeId TypeChecker::checkBinaryOperation(
     case AstExprBinary::Sub:
     case AstExprBinary::Mul:
     case AstExprBinary::Div:
+    case AstExprBinary::FloorDiv:
     case AstExprBinary::Mod:
     case AstExprBinary::Pow:
+        LUAU_ASSERT(FFlag::LuauFloorDivision || expr.op != AstExprBinary::FloorDiv);
+
         reportErrors(tryUnify(lhsType, numberType, scope, expr.left->location));
         reportErrors(tryUnify(rhsType, numberType, scope, expr.right->location));
         return numberType;
@@ -4034,7 +4026,13 @@ void TypeChecker::checkArgumentList(const ScopePtr& scope, const AstExpr& funNam
                     if (argIndex < argLocations.size())
                         location = argLocations[argIndex];
 
-                    unify(*argIter, vtp->ty, scope, location);
+                    if (FFlag::LuauVariadicOverloadFix)
+                    {
+                        state.location = location;
+                        state.tryUnify(*argIter, vtp->ty);
+                    }
+                    else
+                        unify(*argIter, vtp->ty, scope, location);
                     ++argIter;
                     ++argIndex;
                 }
@@ -5405,7 +5403,7 @@ TypeId TypeChecker::resolveTypeWorker(const ScopePtr& scope, const AstType& anno
         std::optional<TableIndexer> tableIndexer;
 
         for (const auto& prop : table->props)
-            props[prop.name.value] = {resolveType(scope, *prop.type)};
+            props[prop.name.value] = {resolveType(scope, *prop.type), /* deprecated: */ false, {}, std::nullopt, {}, std::nullopt, prop.location};
 
         if (const auto& indexer = table->indexer)
             tableIndexer = TableIndexer(resolveType(scope, *indexer->indexType), resolveType(scope, *indexer->resultType));

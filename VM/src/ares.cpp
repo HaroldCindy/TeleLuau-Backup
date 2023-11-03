@@ -2003,14 +2003,10 @@ u_closure(Info *info) {                                                /* ... */
     }
     poppath(info);
     if (needCompile) {
-#ifdef LUA_CUSTOM_EXECUTION
       if (sAresCodeGenCompile == nullptr)
         eris_error(info, "Need codegen initialize");
 
       sAresCodeGenCompile(info->L, -1);
-#else
-      eris_error(info, "Need codegen enabled");
-#endif
     }
   }
 

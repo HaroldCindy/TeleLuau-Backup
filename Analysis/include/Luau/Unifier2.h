@@ -4,6 +4,10 @@
 
 #include "Luau/DenseHash.h"
 #include "Luau/NotNull.h"
+#include "Luau/TypePairHash.h"
+#include "Luau/TypeCheckLimits.h"
+#include "Luau/TypeChecker2.h"
+#include "Luau/TypeFwd.h"
 
 #include <optional>
 #include <vector>
@@ -12,10 +16,6 @@
 namespace Luau
 {
 
-using TypeId = const struct Type*;
-using TypePackId = const struct TypePackVar*;
-
-struct BuiltinTypes;
 struct InternalErrorReporter;
 struct Scope;
 struct TypeArena;
@@ -30,12 +30,17 @@ struct Unifier2
 {
     NotNull<TypeArena> arena;
     NotNull<BuiltinTypes> builtinTypes;
+    NotNull<Scope> scope;
     NotNull<InternalErrorReporter> ice;
+    TypeCheckLimits limits;
+
+    DenseHashSet<std::pair<TypeId, TypeId>, TypePairHash> seenTypePairings{{nullptr, nullptr}};
+    DenseHashSet<std::pair<TypePackId, TypePackId>, TypePairHash> seenTypePackPairings{{nullptr, nullptr}};
 
     int recursionCount = 0;
     int recursionLimit = 0;
 
-    Unifier2(NotNull<TypeArena> arena, NotNull<BuiltinTypes> builtinTypes, NotNull<InternalErrorReporter> ice);
+    Unifier2(NotNull<TypeArena> arena, NotNull<BuiltinTypes> builtinTypes, NotNull<Scope> scope, NotNull<InternalErrorReporter> ice);
 
     /** Attempt to commit the subtype relation subTy <: superTy to the type
      * graph.
@@ -50,13 +55,20 @@ struct Unifier2
      * free TypePack to another and encounter an occurs check violation.
      */
     bool unify(TypeId subTy, TypeId superTy);
+    bool unify(TypeId subTy, const FunctionType* superFn);
+    bool unify(const UnionType* subUnion, TypeId superTy);
+    bool unify(TypeId subTy, const UnionType* superUnion);
+    bool unify(const IntersectionType* subIntersection, TypeId superTy);
+    bool unify(TypeId subTy, const IntersectionType* superIntersection);
+    bool unify(const TableType* subTable, const TableType* superTable);
+    bool unify(const MetatableType* subMetatable, const MetatableType* superMetatable);
 
     // TODO think about this one carefully.  We don't do unions or intersections of type packs
     bool unify(TypePackId subTp, TypePackId superTp);
 
-    std::optional<TypeId> generalize(NotNull<Scope> scope, TypeId ty);
-private:
+    std::optional<TypeId> generalize(TypeId ty);
 
+private:
     /**
      * @returns simplify(left | right)
      */
@@ -72,4 +84,4 @@ private:
     OccursCheckResult occursCheck(DenseHashSet<TypePackId>& seen, TypePackId needle, TypePackId haystack);
 };
 
-}
+} // namespace Luau

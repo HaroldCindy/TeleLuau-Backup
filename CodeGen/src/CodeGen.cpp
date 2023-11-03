@@ -42,6 +42,9 @@
 LUAU_FASTFLAGVARIABLE(DebugCodegenNoOpt, false)
 LUAU_FASTFLAGVARIABLE(DebugCodegenOptSize, false)
 LUAU_FASTFLAGVARIABLE(DebugCodegenSkipNumbering, false)
+LUAU_FASTINTVARIABLE(CodegenHeuristicsInstructionLimit, 1'048'576)   // 1 M
+LUAU_FASTINTVARIABLE(CodegenHeuristicsBlockLimit, 65'536)            // 64 K
+LUAU_FASTINTVARIABLE(CodegenHeuristicsBlockInstructionLimit, 65'536) // 64 K
 
 namespace Luau
 {
@@ -106,7 +109,7 @@ static std::optional<NativeProto> createNativeFunction(AssemblyBuilder& build, M
     IrBuilder ir;
     ir.buildFunctionIr(proto);
 
-    if (!lowerFunction(ir, build, helpers, proto, {}))
+    if (!lowerFunction(ir, build, helpers, proto, {}, /* stats */ nullptr))
         return std::nullopt;
 
     return createNativeProto(proto, ir);
@@ -162,9 +165,6 @@ unsigned int getCpuFeaturesA64()
 
 bool isSupported()
 {
-    if (!LUA_CUSTOM_EXECUTION)
-        return false;
-
     if (LUA_EXTRA_SIZE != 1)
         return false;
 
@@ -250,22 +250,32 @@ void create(lua_State* L)
     create(L, nullptr, nullptr);
 }
 
-void compile(lua_State* L, int idx, unsigned int flags, CompilationStats* stats)
+CodeGenCompilationResult compile(lua_State* L, int idx, unsigned int flags, CompilationStats* stats)
 {
     LUAU_ASSERT(lua_isLfunction(L, idx));
     const TValue* func = luaA_toobject(L, idx);
 
+    Proto* root = clvalue(func)->l.p;
+    if ((flags & CodeGen_OnlyNativeModules) != 0 && (root->flags & LPF_NATIVE_MODULE) == 0)
+        return CodeGenCompilationResult::NothingToCompile;
+
     // If initialization has failed, do not compile any functions
     NativeState* data = getNativeState(L);
     if (!data)
-        return;
-
-    Proto* root = clvalue(func)->l.p;
-    if ((flags & CodeGen_OnlyNativeModules) != 0 && (root->flags & LPF_NATIVE_MODULE) == 0)
-        return;
+        return CodeGenCompilationResult::CodeGenNotInitialized;
 
     std::vector<Proto*> protos;
-    gatherFunctions(protos, root);
+    gatherFunctions(protos, root, flags);
+
+    // Skip protos that have been compiled during previous invocations of CodeGen::compile
+    protos.erase(std::remove_if(protos.begin(), protos.end(),
+                     [](Proto* p) {
+                         return p == nullptr || p->execdata != nullptr;
+                     }),
+        protos.end());
+
+    if (protos.empty())
+        return CodeGenCompilationResult::NothingToCompile;
 
 #if defined(__aarch64__)
     static unsigned int cpuFeatures = getCpuFeaturesA64();
@@ -284,11 +294,9 @@ void compile(lua_State* L, int idx, unsigned int flags, CompilationStats* stats)
     std::vector<NativeProto> results;
     results.reserve(protos.size());
 
-    // Skip protos that have been compiled during previous invocations of CodeGen::compile
     for (Proto* p : protos)
-        if (p && p->execdata == nullptr)
-            if (std::optional<NativeProto> np = createNativeFunction(build, helpers, p))
-                results.push_back(*np);
+        if (std::optional<NativeProto> np = createNativeFunction(build, helpers, p))
+            results.push_back(*np);
 
     // Very large modules might result in overflowing a jump offset; in this case we currently abandon the entire module
     if (!build.finalize())
@@ -296,12 +304,12 @@ void compile(lua_State* L, int idx, unsigned int flags, CompilationStats* stats)
         for (NativeProto result : results)
             destroyExecData(result.execdata);
 
-        return;
+        return CodeGenCompilationResult::CodeGenFailed;
     }
 
     // If no functions were assembled, we don't need to allocate/copy executable pages for helpers
     if (results.empty())
-        return;
+        return CodeGenCompilationResult::CodeGenFailed;
 
     uint8_t* nativeData = nullptr;
     size_t sizeNativeData = 0;
@@ -312,7 +320,7 @@ void compile(lua_State* L, int idx, unsigned int flags, CompilationStats* stats)
         for (NativeProto result : results)
             destroyExecData(result.execdata);
 
-        return;
+        return CodeGenCompilationResult::AllocationFailed;
     }
 
     if (gPerfLogFn && results.size() > 0)
@@ -351,6 +359,8 @@ void compile(lua_State* L, int idx, unsigned int flags, CompilationStats* stats)
         stats->nativeCodeSizeBytes += build.code.size();
         stats->nativeDataSizeBytes += build.data.size();
     }
+
+    return CodeGenCompilationResult::Success;
 }
 
 void setPerfLog(void* context, PerfLogFn logFn)

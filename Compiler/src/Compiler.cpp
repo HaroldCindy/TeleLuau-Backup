@@ -26,9 +26,9 @@ LUAU_FASTINTVARIABLE(LuauCompileInlineThreshold, 25)
 LUAU_FASTINTVARIABLE(LuauCompileInlineThresholdMaxBoost, 300)
 LUAU_FASTINTVARIABLE(LuauCompileInlineDepth, 5)
 
-LUAU_FASTFLAGVARIABLE(LuauCompileFixBuiltinArity, false)
-
-LUAU_FASTFLAGVARIABLE(LuauCompileFoldMathK, false)
+LUAU_FASTFLAG(LuauFloorDivision)
+LUAU_FASTFLAGVARIABLE(LuauCompileFixContinueValidation2, false)
+LUAU_FASTFLAGVARIABLE(LuauCompileIfElseAndOr, false)
 
 namespace Luau
 {
@@ -261,6 +261,10 @@ struct Compiler
         if (bytecode.getInstructionCount() > kMaxInstructionCount)
             CompileError::raise(func->location, "Exceeded function instruction limit; split the function into parts to compile");
 
+        // since top-level code only executes once, it can be marked as cold if it has no loops (top-level code with loops might be profitable to compile natively)
+        if (func->functionDepth == 0 && !hasLoops)
+            protoflags |= LPF_NATIVE_COLD;
+
         bytecode.endFunction(uint8_t(stackSize), uint8_t(upvals.size()), protoflags);
 
         Function& f = functions[func];
@@ -268,7 +272,7 @@ struct Compiler
         f.upvals = upvals;
 
         // record information for inlining
-        if (options.optimizationLevel >= 2 && !func->vararg && !getfenvUsed && !setfenvUsed)
+        if (options.optimizationLevel >= 2 && !func->vararg && !func->self && !getfenvUsed && !setfenvUsed)
         {
             f.canInline = true;
             f.stackSize = stackSize;
@@ -285,6 +289,7 @@ struct Compiler
 
         upvals.clear(); // note: instead of std::move above, we copy & clear to preserve capacity for future pushes
         stackSize = 0;
+        hasLoops = false;
 
         return fid;
     }
@@ -648,10 +653,16 @@ struct Compiler
         // apply all evaluated arguments to the compiler state
         // note: locals use current startpc for debug info, although some of them have been computed earlier; this is similar to compileStatLocal
         for (InlineArg& arg : args)
+        {
             if (arg.value.type == Constant::Type_Unknown)
+            {
                 pushLocal(arg.local, arg.reg);
+            }
             else
+            {
                 locstants[arg.local] = arg.value;
+            }
+        }
 
         // the inline frame will be used to compile return statements as well as to reject recursive inlining attempts
         inlineFrames.push_back({func, oldLocals, target, targetCount});
@@ -695,8 +706,12 @@ struct Compiler
 
         // clean up constant state for future inlining attempts
         for (size_t i = 0; i < func->args.size; ++i)
-            if (Constant* var = locstants.find(func->args.data[i]))
+        {
+            AstLocal* local = func->args.data[i];
+
+            if (Constant* var = locstants.find(local))
                 var->type = Constant::Type_Unknown;
+        }
 
         foldConstants(constants, variables, locstants, builtinsFold, builtinsFoldMathK, func->body);
     }
@@ -793,15 +808,10 @@ struct Compiler
                 return compileExprFastcallN(expr, target, targetCount, targetTop, multRet, regs, bfid);
             else if (options.optimizationLevel >= 2)
             {
-                if (FFlag::LuauCompileFixBuiltinArity)
-                {
-                    // when a builtin is none-safe with matching arity, even if the last expression returns 0 or >1 arguments,
-                    // we can rely on the behavior of the function being the same (none-safe means nil and none are interchangeable)
-                    BuiltinInfo info = getBuiltinInfo(bfid);
-                    if (int(expr->args.size) == info.params && (info.flags & BuiltinInfo::Flag_NoneSafe) != 0)
-                        return compileExprFastcallN(expr, target, targetCount, targetTop, multRet, regs, bfid);
-                }
-                else if (int(expr->args.size) == getBuiltinInfo(bfid).params)
+                // when a builtin is none-safe with matching arity, even if the last expression returns 0 or >1 arguments,
+                // we can rely on the behavior of the function being the same (none-safe means nil and none are interchangeable)
+                BuiltinInfo info = getBuiltinInfo(bfid);
+                if (int(expr->args.size) == info.params && (info.flags & BuiltinInfo::Flag_NoneSafe) != 0)
                     return compileExprFastcallN(expr, target, targetCount, targetTop, multRet, regs, bfid);
             }
         }
@@ -1027,6 +1037,11 @@ struct Compiler
 
         case AstExprBinary::Div:
             return k ? LOP_DIVK : LOP_DIV;
+
+        case AstExprBinary::FloorDiv:
+            LUAU_ASSERT(FFlag::LuauFloorDivision);
+
+            return k ? LOP_IDIVK : LOP_IDIV;
 
         case AstExprBinary::Mod:
             return k ? LOP_MODK : LOP_MOD;
@@ -1478,9 +1493,12 @@ struct Compiler
         case AstExprBinary::Sub:
         case AstExprBinary::Mul:
         case AstExprBinary::Div:
+        case AstExprBinary::FloorDiv:
         case AstExprBinary::Mod:
         case AstExprBinary::Pow:
         {
+            LUAU_ASSERT(FFlag::LuauFloorDivision || expr->op != AstExprBinary::FloorDiv);
+
             int32_t rc = getConstantNumber(expr->right);
 
             if (rc >= 0 && rc <= 255)
@@ -1547,6 +1565,23 @@ struct Compiler
         }
     }
 
+    void compileExprIfElseAndOr(bool and_, uint8_t creg, AstExpr* other, uint8_t target)
+    {
+        int32_t cid = getConstantIndex(other);
+
+        if (cid >= 0 && cid <= 255)
+        {
+            bytecode.emitABC(and_ ? LOP_ANDK : LOP_ORK, target, creg, uint8_t(cid));
+        }
+        else
+        {
+            RegScope rs(this);
+            uint8_t oreg = compileExprAuto(other, rs);
+
+            bytecode.emitABC(and_ ? LOP_AND : LOP_OR, target, creg, oreg);
+        }
+    }
+
     void compileExprIfElse(AstExprIfElse* expr, uint8_t target, bool targetTemp)
     {
         if (isConstant(expr->condition))
@@ -1562,6 +1597,20 @@ struct Compiler
         }
         else
         {
+            if (FFlag::LuauCompileIfElseAndOr)
+            {
+                // Optimization: convert some if..then..else expressions into and/or when the other side has no side effects and is very cheap to compute
+                // if v then v else e => v or e
+                // if v then e else v => v and e
+                if (int creg = getExprLocalReg(expr->condition); creg >= 0)
+                {
+                    if (creg == getExprLocalReg(expr->trueExpr) && (getExprLocalReg(expr->falseExpr) >= 0 || isConstant(expr->falseExpr)))
+                        return compileExprIfElseAndOr(/* and_= */ false, uint8_t(creg), expr->falseExpr, target);
+                    else if (creg == getExprLocalReg(expr->falseExpr) && (getExprLocalReg(expr->trueExpr) >= 0 || isConstant(expr->trueExpr)))
+                        return compileExprIfElseAndOr(/* and_= */ true, uint8_t(creg), expr->trueExpr, target);
+                }
+            }
+
             std::vector<size_t> elseJump;
             compileConditionValue(expr->condition, nullptr, elseJump, false);
             compileExpr(expr->trueExpr, target, targetTemp);
@@ -2465,12 +2514,18 @@ struct Compiler
             return;
         }
 
-        AstStat* continueStatement = extractStatContinue(stat->thenbody);
+        AstStatContinue* continueStatement = extractStatContinue(stat->thenbody);
 
         // Optimization: body is a "continue" statement with no "else" => we can directly continue in "then" case
-        if (!stat->elsebody && continueStatement != nullptr && !areLocalsCaptured(loops.back().localOffset))
+        if (!stat->elsebody && continueStatement != nullptr && !areLocalsCaptured(loops.back().localOffsetContinue))
         {
-            if (loops.back().untilCondition)
+            if (FFlag::LuauCompileFixContinueValidation2)
+            {
+                // track continue statement for repeat..until validation (validateContinueUntil)
+                if (!loops.back().continueUsed)
+                    loops.back().continueUsed = continueStatement;
+            }
+            else if (loops.back().untilCondition)
                 validateContinueUntil(continueStatement, loops.back().untilCondition);
 
             // fallthrough = proceed with the loop body as usual
@@ -2532,7 +2587,8 @@ struct Compiler
         size_t oldJumps = loopJumps.size();
         size_t oldLocals = localStack.size();
 
-        loops.push_back({oldLocals, nullptr});
+        loops.push_back({oldLocals, oldLocals, nullptr, nullptr});
+        hasLoops = true;
 
         size_t loopLabel = bytecode.emitLabel();
 
@@ -2567,7 +2623,8 @@ struct Compiler
         size_t oldJumps = loopJumps.size();
         size_t oldLocals = localStack.size();
 
-        loops.push_back({oldLocals, stat->condition});
+        loops.push_back({oldLocals, oldLocals, stat->condition, nullptr});
+        hasLoops = true;
 
         size_t loopLabel = bytecode.emitLabel();
 
@@ -2577,8 +2634,26 @@ struct Compiler
 
         RegScope rs(this);
 
+        bool continueValidated = false;
+
         for (size_t i = 0; i < body->body.size; ++i)
+        {
             compileStat(body->body.data[i]);
+
+            // continue statement inside the repeat..until loop should not close upvalues defined directly in the loop body
+            // (but it must still close upvalues defined in more nested blocks)
+            // this is because the upvalues defined inside the loop body may be captured by a closure defined in the until
+            // expression that continue will jump to.
+            loops.back().localOffsetContinue = localStack.size();
+
+            // if continue was called from this statement, then any local defined after this in the loop body should not be accessed by until condition
+            // it is sufficient to check this condition once, as if this holds for the first continue, it must hold for all subsequent continues.
+            if (FFlag::LuauCompileFixContinueValidation2 && loops.back().continueUsed && !continueValidated)
+            {
+                validateContinueUntil(loops.back().continueUsed, stat->condition, body, i + 1);
+                continueValidated = true;
+            }
+        }
 
         size_t contLabel = bytecode.emitLabel();
 
@@ -2795,7 +2870,7 @@ struct Compiler
         size_t oldLocals = localStack.size();
         size_t oldJumps = loopJumps.size();
 
-        loops.push_back({oldLocals, nullptr});
+        loops.push_back({oldLocals, oldLocals, nullptr, nullptr});
 
         for (int iv = 0; iv < tripCount; ++iv)
         {
@@ -2846,7 +2921,8 @@ struct Compiler
         size_t oldLocals = localStack.size();
         size_t oldJumps = loopJumps.size();
 
-        loops.push_back({oldLocals, nullptr});
+        loops.push_back({oldLocals, oldLocals, nullptr, nullptr});
+        hasLoops = true;
 
         // register layout: limit, step, index
         uint8_t regs = allocReg(stat, 3);
@@ -2910,7 +2986,8 @@ struct Compiler
         size_t oldLocals = localStack.size();
         size_t oldJumps = loopJumps.size();
 
-        loops.push_back({oldLocals, nullptr});
+        loops.push_back({oldLocals, oldLocals, nullptr, nullptr});
+        hasLoops = true;
 
         // register layout: generator, state, index, variables...
         uint8_t regs = allocReg(stat, 3);
@@ -3201,9 +3278,12 @@ struct Compiler
         case AstExprBinary::Sub:
         case AstExprBinary::Mul:
         case AstExprBinary::Div:
+        case AstExprBinary::FloorDiv:
         case AstExprBinary::Mod:
         case AstExprBinary::Pow:
         {
+            LUAU_ASSERT(FFlag::LuauFloorDivision || stat->op != AstExprBinary::FloorDiv);
+
             if (var.kind != LValue::Kind_Local)
                 compileLValueUse(var, target, /* set= */ false);
 
@@ -3318,12 +3398,18 @@ struct Compiler
         {
             LUAU_ASSERT(!loops.empty());
 
-            if (loops.back().untilCondition)
+            if (FFlag::LuauCompileFixContinueValidation2)
+            {
+                // track continue statement for repeat..until validation (validateContinueUntil)
+                if (!loops.back().continueUsed)
+                    loops.back().continueUsed = stat;
+            }
+            else if (loops.back().untilCondition)
                 validateContinueUntil(stat, loops.back().untilCondition);
 
             // before continuing, we need to close all local variables that were captured in closures since loop start
             // normally they are closed by the enclosing blocks, including the loop block, but we're skipping that here
-            closeLocals(loops.back().localOffset);
+            closeLocals(loops.back().localOffsetContinue);
 
             size_t label = bytecode.emitLabel();
 
@@ -3404,7 +3490,34 @@ struct Compiler
 
     void validateContinueUntil(AstStat* cont, AstExpr* condition)
     {
+        LUAU_ASSERT(!FFlag::LuauCompileFixContinueValidation2);
         UndefinedLocalVisitor visitor(this);
+        condition->visit(&visitor);
+
+        if (visitor.undef)
+            CompileError::raise(condition->location,
+                "Local %s used in the repeat..until condition is undefined because continue statement on line %d jumps over it",
+                visitor.undef->name.value, cont->location.begin.line + 1);
+    }
+
+    void validateContinueUntil(AstStat* cont, AstExpr* condition, AstStatBlock* body, size_t start)
+    {
+        LUAU_ASSERT(FFlag::LuauCompileFixContinueValidation2);
+        UndefinedLocalVisitor visitor(this);
+
+        for (size_t i = start; i < body->body.size; ++i)
+        {
+            if (AstStatLocal* stat = body->body.data[i]->as<AstStatLocal>())
+            {
+                for (AstLocal* local : stat->vars)
+                    visitor.locals.insert(local);
+            }
+            else if (AstStatLocalFunction* stat = body->body.data[i]->as<AstStatLocalFunction>())
+            {
+                visitor.locals.insert(stat->name);
+            }
+        }
+
         condition->visit(&visitor);
 
         if (visitor.undef)
@@ -3629,15 +3742,24 @@ struct Compiler
         UndefinedLocalVisitor(Compiler* self)
             : self(self)
             , undef(nullptr)
+            , locals(nullptr)
         {
         }
 
         void check(AstLocal* local)
         {
-            Local& l = self->locals[local];
+            if (FFlag::LuauCompileFixContinueValidation2)
+            {
+                if (!undef && locals.contains(local))
+                    undef = local;
+            }
+            else
+            {
+                Local& l = self->locals[local];
 
-            if (!l.allocated && !undef)
-                undef = local;
+                if (!l.allocated && !undef)
+                    undef = local;
+            }
         }
 
         bool visit(AstExprLocal* node) override
@@ -3666,6 +3788,7 @@ struct Compiler
 
         Compiler* self;
         AstLocal* undef;
+        DenseHashSet<AstLocal*> locals;
     };
 
     struct ConstUpvalueVisitor : AstVisitor
@@ -3779,8 +3902,12 @@ struct Compiler
     struct Loop
     {
         size_t localOffset;
+        size_t localOffsetContinue;
 
+        // TODO: Remove with LuauCompileFixContinueValidation2
         AstExpr* untilCondition;
+
+        AstStatContinue* continueUsed;
     };
 
     struct InlineArg
@@ -3826,8 +3953,10 @@ struct Compiler
     const DenseHashMap<AstExprCall*, int>* builtinsFold = nullptr;
     bool builtinsFoldMathK = false;
 
+    // compileFunction state, gets reset for every function
     unsigned int regTop = 0;
     unsigned int stackSize = 0;
+    bool hasLoops = false;
 
     bool getfenvUsed = false;
     bool setfenvUsed = false;
@@ -3873,14 +4002,20 @@ void compileOrThrow(BytecodeBuilder& bytecode, const ParseResult& parseResult, c
     // this pass analyzes mutability of locals/globals and associates locals with their initial values
     trackValues(compiler.globals, compiler.variables, root);
 
+    // this visitor tracks calls to getfenv/setfenv and disables some optimizations when they are found
+    if (options.optimizationLevel >= 1 && (names.get("getfenv").value || names.get("setfenv").value))
+    {
+        Compiler::FenvVisitor fenvVisitor(compiler.getfenvUsed, compiler.setfenvUsed);
+        root->visit(&fenvVisitor);
+    }
+
     // builtin folding is enabled on optimization level 2 since we can't deoptimize folding at runtime
-    if (options.optimizationLevel >= 2)
+    if (options.optimizationLevel >= 2 && (!compiler.getfenvUsed && !compiler.setfenvUsed))
     {
         compiler.builtinsFold = &compiler.builtins;
 
-        if (FFlag::LuauCompileFoldMathK)
-            if (AstName math = names.get("math"); math.value && getGlobalState(compiler.globals, math) == Global::Default)
-                compiler.builtinsFoldMathK = true;
+        if (AstName math = names.get("math"); math.value && getGlobalState(compiler.globals, math) == Global::Default)
+            compiler.builtinsFoldMathK = true;
     }
 
     if (options.optimizationLevel >= 1)
@@ -3893,13 +4028,6 @@ void compileOrThrow(BytecodeBuilder& bytecode, const ParseResult& parseResult, c
 
         // this pass analyzes table assignments to estimate table shapes for initially empty tables
         predictTableShapes(compiler.tableShapes, root);
-    }
-
-    // this visitor tracks calls to getfenv/setfenv and disables some optimizations when they are found
-    if (options.optimizationLevel >= 1 && (names.get("getfenv").value || names.get("setfenv").value))
-    {
-        Compiler::FenvVisitor fenvVisitor(compiler.getfenvUsed, compiler.setfenvUsed);
-        root->visit(&fenvVisitor);
     }
 
     // gathers all functions with the invariant that all function references are to functions earlier in the list

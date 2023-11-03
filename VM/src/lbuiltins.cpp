@@ -8,8 +8,10 @@
 #include "lgc.h"
 #include "lnumutils.h"
 #include "ldo.h"
+#include "lbuffer.h"
 
 #include <math.h>
+#include <string.h>
 
 #ifdef _MSC_VER
 #include <intrin.h>
@@ -22,8 +24,6 @@
 #include <cpuid.h> // on MSVC this comes from intrin.h
 #endif
 #endif
-
-LUAU_DYNAMIC_FASTFLAGVARIABLE(LuauFastcallGC, false)
 
 // luauF functions implement FASTCALL instruction that performs a direct execution of some builtin functions from the VM
 // The rule of thumb is that FASTCALL functions can not call user code, yield, fail, or reallocate stack.
@@ -832,7 +832,7 @@ static int luauF_char(lua_State* L, StkId res, TValue* arg0, int nresults, StkId
 
     if (nparams < int(sizeof(buffer)) && nresults <= 1)
     {
-        if (DFFlag::LuauFastcallGC && luaC_needsGC(L))
+        if (luaC_needsGC(L))
             return -1; // we can't call luaC_checkGC so fall back to C implementation
 
         if (nparams >= 1)
@@ -904,7 +904,7 @@ static int luauF_sub(lua_State* L, StkId res, TValue* arg0, int nresults, StkId 
         int i = int(nvalue(args));
         int j = int(nvalue(args + 1));
 
-        if (DFFlag::LuauFastcallGC && luaC_needsGC(L))
+        if (luaC_needsGC(L))
             return -1; // we can't call luaC_checkGC so fall back to C implementation
 
         if (i >= 1 && j >= i && unsigned(j - 1) < unsigned(ts->len))
@@ -1300,7 +1300,7 @@ static int luauF_tostring(lua_State* L, StkId res, TValue* arg0, int nresults, S
         }
         case LUA_TNUMBER:
         {
-            if (DFFlag::LuauFastcallGC && luaC_needsGC(L))
+            if (luaC_needsGC(L))
                 return -1; // we can't call luaC_checkGC so fall back to C implementation
 
             char s[LUAI_MAXNUM2STR];
@@ -1317,6 +1317,112 @@ static int luauF_tostring(lua_State* L, StkId res, TValue* arg0, int nresults, S
 
         // fall back to generic C implementation
     }
+
+    return -1;
+}
+
+static int luauF_byteswap(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+    if (nparams >= 1 && nresults <= 1 && ttisnumber(arg0))
+    {
+        double a1 = nvalue(arg0);
+        unsigned n;
+        luai_num2unsigned(n, a1);
+
+        n = (n << 24) | ((n << 8) & 0xff0000) | ((n >> 8) & 0xff00) | (n >> 24);
+
+        setnvalue(res, double(n));
+        return 1;
+    }
+
+    return -1;
+}
+
+// because offset is limited to an integer, a single 64bit comparison can be used and will not overflow
+#define checkoutofbounds(offset, len, accessize) (uint64_t(unsigned(offset)) + (accessize - 1) >= uint64_t(len))
+
+template<typename T>
+static int luauF_readinteger(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+#if !defined(LUAU_BIG_ENDIAN)
+    if (nparams >= 2 && nresults <= 1 && ttisbuffer(arg0) && ttisnumber(args))
+    {
+        int offset;
+        luai_num2int(offset, nvalue(args));
+        if (checkoutofbounds(offset, bufvalue(arg0)->len, sizeof(T)))
+            return -1;
+
+        T val;
+        memcpy(&val, (char*)bufvalue(arg0)->data + offset, sizeof(T));
+        setnvalue(res, double(val));
+        return 1;
+    }
+#endif
+
+    return -1;
+}
+
+template<typename T>
+static int luauF_writeinteger(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+#if !defined(LUAU_BIG_ENDIAN)
+    if (nparams >= 3 && nresults <= 0 && ttisbuffer(arg0) && ttisnumber(args) && ttisnumber(args + 1))
+    {
+        int offset;
+        luai_num2int(offset, nvalue(args));
+        if (checkoutofbounds(offset, bufvalue(arg0)->len, sizeof(T)))
+            return -1;
+
+        unsigned value;
+        double incoming = nvalue(args + 1);
+        luai_num2unsigned(value, incoming);
+
+        T val = T(value);
+        memcpy((char*)bufvalue(arg0)->data + offset, &val, sizeof(T));
+        return 0;
+    }
+#endif
+
+    return -1;
+}
+
+template<typename T>
+static int luauF_readfp(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+#if !defined(LUAU_BIG_ENDIAN)
+    if (nparams >= 2 && nresults <= 1 && ttisbuffer(arg0) && ttisnumber(args))
+    {
+        int offset;
+        luai_num2int(offset, nvalue(args));
+        if (checkoutofbounds(offset, bufvalue(arg0)->len, sizeof(T)))
+            return -1;
+
+        T val;
+        memcpy(&val, (char*)bufvalue(arg0)->data + offset, sizeof(T));
+        setnvalue(res, double(val));
+        return 1;
+    }
+#endif
+
+    return -1;
+}
+
+template<typename T>
+static int luauF_writefp(lua_State* L, StkId res, TValue* arg0, int nresults, StkId args, int nparams)
+{
+#if !defined(LUAU_BIG_ENDIAN)
+    if (nparams >= 3 && nresults <= 0 && ttisbuffer(arg0) && ttisnumber(args) && ttisnumber(args + 1))
+    {
+        int offset;
+        luai_num2int(offset, nvalue(args));
+        if (checkoutofbounds(offset, bufvalue(arg0)->len, sizeof(T)))
+            return -1;
+
+        T val = T(nvalue(args + 1));
+        memcpy((char*)bufvalue(arg0)->data + offset, &val, sizeof(T));
+        return 0;
+    }
+#endif
 
     return -1;
 }
@@ -1487,6 +1593,22 @@ const luau_FastFunction luauF_table[256] = {
 
     luauF_tonumber,
     luauF_tostring,
+
+    luauF_byteswap,
+
+    luauF_readinteger<int8_t>,
+    luauF_readinteger<uint8_t>,
+    luauF_writeinteger<uint8_t>,
+    luauF_readinteger<int16_t>,
+    luauF_readinteger<uint16_t>,
+    luauF_writeinteger<uint16_t>,
+    luauF_readinteger<int32_t>,
+    luauF_readinteger<uint32_t>,
+    luauF_writeinteger<uint32_t>,
+    luauF_readfp<float>,
+    luauF_writefp<float>,
+    luauF_readfp<double>,
+    luauF_writefp<double>,
 
 // When adding builtins, add them above this line; what follows is 64 "dummy" entries with luauF_missing fallback.
 // This is important so that older versions of the runtime that don't support newer builtins automatically fall back via luauF_missing.

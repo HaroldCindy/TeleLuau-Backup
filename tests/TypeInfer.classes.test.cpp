@@ -369,9 +369,7 @@ TEST_CASE_FIXTURE(ClassFixture, "detailed_class_unification_error")
 {
     ScopedFastFlag sff[] = {
         {"LuauAlwaysCommitInferencesOfFunctionCalls", true},
-        {"LuauIndentTypeMismatch", true},
     };
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
     CheckResult result = check(R"(
 local function foo(v)
     return v.X :: number + string.len(v.Y)
@@ -385,7 +383,7 @@ b(a)
     LUAU_REQUIRE_ERROR_COUNT(1, result);
     const std::string expected = R"(Type 'Vector2' could not be converted into '{- X: number, Y: string -}'
 caused by:
-  Property 'Y' is not compatible. 
+  Property 'Y' is not compatible.
 Type 'number' could not be converted into 'string')";
     CHECK_EQ(expected, toString(result.errors[0]));
 }
@@ -457,8 +455,6 @@ TEST_CASE_FIXTURE(ClassFixture, "index_instance_property_nonstrict")
 
 TEST_CASE_FIXTURE(ClassFixture, "type_mismatch_invariance_required_for_error")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
     CheckResult result = check(R"(
 type A = { x: ChildClass }
 type B = { x: BaseClass }
@@ -470,7 +466,7 @@ local b: B = a
     LUAU_REQUIRE_ERRORS(result);
     const std::string expected = R"(Type 'A' could not be converted into 'B'
 caused by:
-  Property 'x' is not compatible. 
+  Property 'x' is not compatible.
 Type 'ChildClass' could not be converted into 'BaseClass' in an invariant context)";
     CHECK_EQ(expected, toString(result.errors[0]));
 }

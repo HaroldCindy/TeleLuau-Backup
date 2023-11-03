@@ -713,9 +713,6 @@ end
 
 TEST_CASE_FIXTURE(Fixture, "generic_functions_should_be_memory_safe")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
-
     CheckResult result = check(R"(
 --!strict
 -- At one point this produced a UAF
@@ -730,10 +727,10 @@ y.a.c = y
     LUAU_REQUIRE_ERRORS(result);
     const std::string expected = R"(Type 'y' could not be converted into 'T<string>'
 caused by:
-  Property 'a' is not compatible. 
+  Property 'a' is not compatible.
 Type '{ c: T<string>?, d: number }' could not be converted into 'U<string>'
 caused by:
-  Property 'd' is not compatible. 
+  Property 'd' is not compatible.
 Type 'number' could not be converted into 'string' in an invariant context)";
     CHECK_EQ(expected, toString(result.errors[0]));
 }
@@ -1190,6 +1187,20 @@ end)
 local y = complex2.nested.getReturnValue(function()
 	return 3
 end)
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(Fixture, "apply_type_function_nested_generics3")
+{
+    // This minimization was useful for debugging a particular issue with
+    // cyclic types under local type inference.
+
+    CheckResult result = check(R"(
+        local getReturnValue: <V>(cb: () -> V) -> V = nil :: any
+
+        local y = getReturnValue(function() return nil :: any end)
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);

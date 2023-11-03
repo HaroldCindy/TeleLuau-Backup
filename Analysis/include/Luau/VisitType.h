@@ -10,6 +10,7 @@
 
 LUAU_FASTINT(LuauVisitRecursionLimit)
 LUAU_FASTFLAG(LuauBoundLazyTypes2)
+LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
 LUAU_FASTFLAG(DebugLuauReadWriteProperties)
 
 namespace Luau
@@ -220,7 +221,26 @@ struct GenericTypeVisitor
                 traverse(btv->boundTo);
         }
         else if (auto ftv = get<FreeType>(ty))
-            visit(ty, *ftv);
+        {
+            if (FFlag::DebugLuauDeferredConstraintResolution)
+            {
+                if (visit(ty, *ftv))
+                {
+                    // TODO: Replace these if statements with assert()s when we
+                    // delete FFlag::DebugLuauDeferredConstraintResolution.
+                    //
+                    // When the old solver is used, these pointers are always
+                    // unused. When the new solver is used, they are never null.
+                    if (ftv->lowerBound)
+                        traverse(ftv->lowerBound);
+
+                    if (ftv->upperBound)
+                        traverse(ftv->upperBound);
+                }
+            }
+            else
+                visit(ty, *ftv);
+        }
         else if (auto gtv = get<GenericType>(ty))
             visit(ty, *gtv);
         else if (auto etv = get<ErrorType>(ty))

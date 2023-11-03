@@ -23,13 +23,16 @@
 LUAU_FASTFLAG(DebugCodegenNoOpt)
 LUAU_FASTFLAG(DebugCodegenOptSize)
 LUAU_FASTFLAG(DebugCodegenSkipNumbering)
+LUAU_FASTINT(CodegenHeuristicsInstructionLimit)
+LUAU_FASTINT(CodegenHeuristicsBlockLimit)
+LUAU_FASTINT(CodegenHeuristicsBlockInstructionLimit)
 
 namespace Luau
 {
 namespace CodeGen
 {
 
-inline void gatherFunctions(std::vector<Proto*>& results, Proto* proto)
+inline void gatherFunctions(std::vector<Proto*>& results, Proto* proto, unsigned int flags)
 {
     if (results.size() <= size_t(proto->bytecodeid))
         results.resize(proto->bytecodeid + 1);
@@ -38,45 +41,19 @@ inline void gatherFunctions(std::vector<Proto*>& results, Proto* proto)
     if (results[proto->bytecodeid])
         return;
 
-    results[proto->bytecodeid] = proto;
+    // Only compile cold functions if requested
+    if ((proto->flags & LPF_NATIVE_COLD) == 0 || (flags & CodeGen_ColdFunctions) != 0)
+        results[proto->bytecodeid] = proto;
 
+    // Recursively traverse child protos even if we aren't compiling this one
     for (int i = 0; i < proto->sizep; i++)
-        gatherFunctions(results, proto->p[i]);
-}
-
-inline IrBlock& getNextBlock(IrFunction& function, std::vector<uint32_t>& sortedBlocks, IrBlock& dummy, size_t i)
-{
-    for (size_t j = i + 1; j < sortedBlocks.size(); ++j)
-    {
-        IrBlock& block = function.blocks[sortedBlocks[j]];
-        if (block.kind != IrBlockKind::Dead)
-            return block;
-    }
-
-    return dummy;
+        gatherFunctions(results, proto->p[i], flags);
 }
 
 template<typename AssemblyBuilder, typename IrLowering>
-inline bool lowerImpl(AssemblyBuilder& build, IrLowering& lowering, IrFunction& function, int bytecodeid, AssemblyOptions options)
+inline bool lowerImpl(AssemblyBuilder& build, IrLowering& lowering, IrFunction& function, const std::vector<uint32_t>& sortedBlocks, int bytecodeid,
+    AssemblyOptions options)
 {
-    // While we will need a better block ordering in the future, right now we want to mostly preserve build order with fallbacks outlined
-    std::vector<uint32_t> sortedBlocks;
-    sortedBlocks.reserve(function.blocks.size());
-    for (uint32_t i = 0; i < function.blocks.size(); i++)
-        sortedBlocks.push_back(i);
-
-    std::sort(sortedBlocks.begin(), sortedBlocks.end(), [&](uint32_t idxA, uint32_t idxB) {
-        const IrBlock& a = function.blocks[idxA];
-        const IrBlock& b = function.blocks[idxB];
-
-        // Place fallback blocks at the end
-        if ((a.kind == IrBlockKind::Fallback) != (b.kind == IrBlockKind::Fallback))
-            return (a.kind == IrBlockKind::Fallback) < (b.kind == IrBlockKind::Fallback);
-
-        // Try to order by instruction order
-        return a.sortkey < b.sortkey;
-    });
-
     // For each IR instruction that begins a bytecode instruction, which bytecode instruction is it?
     std::vector<uint32_t> bcLocations(function.instructions.size() + 1, ~0u);
 
@@ -99,6 +76,9 @@ inline bool lowerImpl(AssemblyBuilder& build, IrLowering& lowering, IrFunction& 
 
     IrBlock dummy;
     dummy.start = ~0u;
+
+    // Make sure entry block is first
+    LUAU_ASSERT(sortedBlocks[0] == 0);
 
     for (size_t i = 0; i < sortedBlocks.size(); ++i)
     {
@@ -136,6 +116,11 @@ inline bool lowerImpl(AssemblyBuilder& build, IrLowering& lowering, IrFunction& 
         }
 
         IrBlock& nextBlock = getNextBlock(function, sortedBlocks, dummy, i);
+
+        // Optimizations often propagate information between blocks
+        // To make sure the register and spill state is correct when blocks are lowered, we check that sorted block order matches the expected one
+        if (block.expectedNextBlock != ~0u)
+            LUAU_ASSERT(function.getBlockIndex(nextBlock) == block.expectedNextBlock);
 
         for (uint32_t index = block.start; index <= block.finish; index++)
         {
@@ -194,7 +179,7 @@ inline bool lowerImpl(AssemblyBuilder& build, IrLowering& lowering, IrFunction& 
             }
         }
 
-        lowering.finishBlock();
+        lowering.finishBlock(block, nextBlock);
 
         if (options.includeIr)
             build.logAppend("#\n");
@@ -219,26 +204,61 @@ inline bool lowerImpl(AssemblyBuilder& build, IrLowering& lowering, IrFunction& 
     return true;
 }
 
-inline bool lowerIr(X64::AssemblyBuilderX64& build, IrBuilder& ir, ModuleHelpers& helpers, Proto* proto, AssemblyOptions options)
+inline bool lowerIr(X64::AssemblyBuilderX64& build, IrBuilder& ir, const std::vector<uint32_t>& sortedBlocks, ModuleHelpers& helpers, Proto* proto,
+    AssemblyOptions options, LoweringStats* stats)
 {
     optimizeMemoryOperandsX64(ir.function);
 
-    X64::IrLoweringX64 lowering(build, helpers, ir.function);
+    X64::IrLoweringX64 lowering(build, helpers, ir.function, stats);
 
-    return lowerImpl(build, lowering, ir.function, proto->bytecodeid, options);
+    return lowerImpl(build, lowering, ir.function, sortedBlocks, proto->bytecodeid, options);
 }
 
-inline bool lowerIr(A64::AssemblyBuilderA64& build, IrBuilder& ir, ModuleHelpers& helpers, Proto* proto, AssemblyOptions options)
+inline bool lowerIr(A64::AssemblyBuilderA64& build, IrBuilder& ir, const std::vector<uint32_t>& sortedBlocks, ModuleHelpers& helpers, Proto* proto,
+    AssemblyOptions options, LoweringStats* stats)
 {
-    A64::IrLoweringA64 lowering(build, helpers, ir.function);
+    A64::IrLoweringA64 lowering(build, helpers, ir.function, stats);
 
-    return lowerImpl(build, lowering, ir.function, proto->bytecodeid, options);
+    return lowerImpl(build, lowering, ir.function, sortedBlocks, proto->bytecodeid, options);
 }
 
 template<typename AssemblyBuilder>
-inline bool lowerFunction(IrBuilder& ir, AssemblyBuilder& build, ModuleHelpers& helpers, Proto* proto, AssemblyOptions options)
+inline bool lowerFunction(IrBuilder& ir, AssemblyBuilder& build, ModuleHelpers& helpers, Proto* proto, AssemblyOptions options, LoweringStats* stats)
 {
+    helpers.bytecodeInstructionCount += unsigned(ir.function.instructions.size());
+
+    if (helpers.bytecodeInstructionCount >= unsigned(FInt::CodegenHeuristicsInstructionLimit.value))
+        return false;
+
     killUnusedBlocks(ir.function);
+
+    unsigned preOptBlockCount = 0;
+    unsigned maxBlockInstructions = 0;
+
+    for (const IrBlock& block : ir.function.blocks)
+    {
+        preOptBlockCount += (block.kind != IrBlockKind::Dead);
+        unsigned blockInstructions = block.finish - block.start;
+        maxBlockInstructions = std::max(maxBlockInstructions, blockInstructions);
+    };
+
+    helpers.preOptBlockCount += preOptBlockCount;
+
+    // we update stats before checking the heuristic so that even if we bail out
+    // our stats include information about the limit that was exceeded.
+    if (stats)
+    {
+        stats->blocksPreOpt += preOptBlockCount;
+        stats->maxBlockInstructions = maxBlockInstructions;
+    }
+
+    // we use helpers.blocksPreOpt instead of stats.blocksPreOpt since
+    // stats can be null across some code paths.
+    if (helpers.preOptBlockCount >= unsigned(FInt::CodegenHeuristicsBlockLimit.value))
+        return false;
+
+    if (maxBlockInstructions >= unsigned(FInt::CodegenHeuristicsBlockInstructionLimit.value))
+        return false;
 
     computeCfgInfo(ir.function);
 
@@ -252,7 +272,21 @@ inline bool lowerFunction(IrBuilder& ir, AssemblyBuilder& build, ModuleHelpers& 
             createLinearBlocks(ir, useValueNumbering);
     }
 
-    return lowerIr(build, ir, helpers, proto, options);
+    std::vector<uint32_t> sortedBlocks = getSortedBlockOrder(ir.function);
+
+    // In order to allocate registers during lowering, we need to know where instruction results are last used
+    updateLastUseLocations(ir.function, sortedBlocks);
+
+    if (stats)
+    {
+        for (const IrBlock& block : ir.function.blocks)
+        {
+            if (block.kind != IrBlockKind::Dead)
+                ++stats->blocksPostOpt;
+        }
+    }
+
+    return lowerIr(build, ir, sortedBlocks, helpers, proto, options, stats);
 }
 
 } // namespace CodeGen

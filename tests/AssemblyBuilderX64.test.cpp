@@ -264,6 +264,14 @@ TEST_CASE_FIXTURE(AssemblyBuilderX64Fixture, "FormsOfSetcc")
     SINGLE_COMPARE(setcc(ConditionX64::BelowEqual, byte[rcx]), 0x0f, 0x96, 0x01);
 }
 
+TEST_CASE_FIXTURE(AssemblyBuilderX64Fixture, "FormsOfCmov")
+{
+    SINGLE_COMPARE(cmov(ConditionX64::LessEqual, ebx, eax), 0x0f, 0x4e, 0xd8);
+    SINGLE_COMPARE(cmov(ConditionX64::NotZero, rbx, qword[rax]), 0x48, 0x0f, 0x45, 0x18);
+    SINGLE_COMPARE(cmov(ConditionX64::Zero, rbx, qword[rax + rcx]), 0x48, 0x0f, 0x44, 0x1c, 0x08);
+    SINGLE_COMPARE(cmov(ConditionX64::BelowEqual, r14d, r15d), 0x45, 0x0f, 0x46, 0xf7);
+}
+
 TEST_CASE_FIXTURE(AssemblyBuilderX64Fixture, "FormsOfAbsoluteJumps")
 {
     SINGLE_COMPARE(jmp(rax), 0xff, 0xe0);
@@ -540,6 +548,10 @@ TEST_CASE_FIXTURE(AssemblyBuilderX64Fixture, "MiscInstructions")
     SINGLE_COMPARE(ud2(), 0x0f, 0x0b);
     SINGLE_COMPARE(bsr(eax, edx), 0x0f, 0xbd, 0xc2);
     SINGLE_COMPARE(bsf(eax, edx), 0x0f, 0xbc, 0xc2);
+    SINGLE_COMPARE(bswap(eax), 0x0f, 0xc8);
+    SINGLE_COMPARE(bswap(r12d), 0x41, 0x0f, 0xcc);
+    SINGLE_COMPARE(bswap(rax), 0x48, 0x0f, 0xc8);
+    SINGLE_COMPARE(bswap(r12), 0x49, 0x0f, 0xcc);
 }
 
 TEST_CASE_FIXTURE(AssemblyBuilderX64Fixture, "LabelLea")
@@ -576,6 +588,7 @@ TEST_CASE("LogTest")
     build.cmp(rsi, rdi);
     build.jcc(ConditionX64::Equal, start);
     build.lea(rcx, start);
+    build.lea(rcx, addr[rdx]);
 
     build.jmp(qword[rdx]);
     build.vaddps(ymm9, ymm12, ymmword[rbp + 0xc]);
@@ -590,6 +603,7 @@ TEST_CASE("LogTest")
     build.vroundsd(xmm1, xmm2, xmm3, RoundingModeX64::RoundToNearestEven);
     build.add(rdx, qword[rcx - 12]);
     build.pop(r12);
+    build.cmov(ConditionX64::AboveEqual, rax, rbx);
     build.ret();
     build.int3();
 
@@ -621,6 +635,7 @@ TEST_CASE("LogTest")
  cmp         rsi,rdi
  je          .L1
  lea         rcx,.L1
+ lea         rcx,[rdx]
  jmp         qword ptr [rdx]
  vaddps      ymm9,ymm12,ymmword ptr [rbp+0Ch]
  vaddpd      ymm2,ymm7,qword ptr [.start-8]
@@ -634,6 +649,7 @@ TEST_CASE("LogTest")
  vroundsd    xmm1,xmm2,xmm3,8
  add         rdx,qword ptr [rcx-0Ch]
  pop         r12
+ cmovae      rax,rbx
  ret
  int3
  nop

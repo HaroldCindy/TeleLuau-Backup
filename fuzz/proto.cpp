@@ -7,6 +7,7 @@
 #include "Luau/CodeGen.h"
 #include "Luau/Common.h"
 #include "Luau/Compiler.h"
+#include "Luau/Config.h"
 #include "Luau/Frontend.h"
 #include "Luau/Linter.h"
 #include "Luau/ModuleResolver.h"
@@ -362,6 +363,7 @@ DEFINE_PROTO_FUZZER(const luau::ModuleSet& message)
         if (luau_load(globalState, "=fuzz", bytecode.data(), bytecode.size(), 0) == 0)
         {
             Luau::CodeGen::AssemblyOptions options;
+            options.flags = Luau::CodeGen::CodeGen_ColdFunctions;
             options.outputBinary = true;
             options.target = kFuzzCodegenTarget;
             Luau::CodeGen::getAssembly(globalState, -1, options);
@@ -383,7 +385,7 @@ DEFINE_PROTO_FUZZER(const luau::ModuleSet& message)
             if (luau_load(L, "=fuzz", bytecode.data(), bytecode.size(), 0) == 0)
             {
                 if (useCodegen)
-                    Luau::CodeGen::compile(L, -1);
+                    Luau::CodeGen::compile(L, -1, Luau::CodeGen::CodeGen_ColdFunctions);
 
                 interruptDeadline = std::chrono::system_clock::now() + kInterruptTimeout;
 

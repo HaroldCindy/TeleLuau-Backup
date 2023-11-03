@@ -3,13 +3,12 @@
 
 #include "Luau/NotNull.h"
 #include "Luau/Substitution.h"
-#include "Luau/Type.h"
+#include "Luau/TypeFwd.h"
 #include "Luau/Unifiable.h"
 
 namespace Luau
 {
 
-struct BuiltinTypes;
 struct TxnLog;
 struct TypeArena;
 struct TypeCheckLimits;
@@ -17,8 +16,8 @@ struct TypeCheckLimits;
 // A substitution which replaces generic types in a given set by free types.
 struct ReplaceGenerics : Substitution
 {
-    ReplaceGenerics(const TxnLog* log, TypeArena* arena, NotNull<BuiltinTypes> builtinTypes, TypeLevel level, Scope* scope, const std::vector<TypeId>& generics,
-        const std::vector<TypePackId>& genericPacks)
+    ReplaceGenerics(const TxnLog* log, TypeArena* arena, NotNull<BuiltinTypes> builtinTypes, TypeLevel level, Scope* scope,
+        const std::vector<TypeId>& generics, const std::vector<TypePackId>& genericPacks)
         : Substitution(log, arena)
         , builtinTypes(builtinTypes)
         , level(level)
@@ -77,6 +76,7 @@ struct Instantiation : Substitution
  * Instantiation fails only when processing the type causes internal recursion
  * limits to be exceeded.
  */
-std::optional<TypeId> instantiate(NotNull<BuiltinTypes> builtinTypes, NotNull<TypeArena> arena, NotNull<TypeCheckLimits> limits, NotNull<Scope> scope, TypeId ty);
+std::optional<TypeId> instantiate(
+    NotNull<BuiltinTypes> builtinTypes, NotNull<TypeArena> arena, NotNull<TypeCheckLimits> limits, NotNull<Scope> scope, TypeId ty);
 
 } // namespace Luau

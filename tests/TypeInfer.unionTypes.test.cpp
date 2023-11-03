@@ -222,9 +222,9 @@ TEST_CASE_FIXTURE(Fixture, "union_equality_comparisons")
         type B = number | nil
         type C = number | boolean
 
-        local a: A = 1
-        local b: B = nil
-        local c: C = true
+        local a = 1 :: A
+        local b = nil :: B
+        local c = true :: C
         local n = 1
 
         local x = a == b
@@ -356,7 +356,10 @@ a.x = 2
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
     auto s = toString(result.errors[0]);
-    CHECK_EQ("Value of type '({| x: number |} & {| y: number |})?' could be nil", s);
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("Value of type '({ x: number } & { y: number })?' could be nil", s);
+    else
+        CHECK_EQ("Value of type '({| x: number |} & {| y: number |})?' could be nil", s);
 }
 
 TEST_CASE_FIXTURE(Fixture, "optional_length_error")
@@ -459,8 +462,6 @@ local oh : boolean = t.y
 
 TEST_CASE_FIXTURE(Fixture, "error_detailed_union_part")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
     CheckResult result = check(R"(
 type X = { x: number }
 type Y = { y: number }
@@ -473,11 +474,20 @@ local b: { w: number } = a
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    const std::string expected = R"(Type 'X | Y | Z' could not be converted into '{| w: number |}'
-caused by:
-  Not all union options are compatible. 
-Table type 'X' not compatible with type '{| w: number |}' because the former is missing field 'w')";
-    CHECK_EQ(expected, toString(result.errors[0]));
+    TypeMismatch* tm = get<TypeMismatch>(result.errors[0]);
+    REQUIRE(tm);
+
+    CHECK_EQ(tm->reason, "Not all union options are compatible.");
+
+    CHECK_EQ("X | Y | Z", toString(tm->givenType));
+
+    const TableType* expected = get<TableType>(tm->wantedType);
+    REQUIRE(expected);
+    CHECK_EQ(TableState::Sealed, expected->state);
+    CHECK_EQ(1, expected->props.size());
+    auto propW = expected->props.find("w");
+    REQUIRE_NE(expected->props.end(), propW);
+    CHECK_EQ("number", toString(propW->second.type()));
 }
 
 TEST_CASE_FIXTURE(Fixture, "error_detailed_union_all")
@@ -498,8 +508,6 @@ local a: XYZ = { w = 4 }
 
 TEST_CASE_FIXTURE(Fixture, "error_detailed_optional")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
     CheckResult result = check(R"(
 type X = { x: number }
 
@@ -509,7 +517,7 @@ local a: X? = { w = 4 }
     LUAU_REQUIRE_ERROR_COUNT(1, result);
     const std::string expected = R"(Type 'a' could not be converted into 'X?'
 caused by:
-  None of the union options are compatible. For example: 
+  None of the union options are compatible. For example:
 Table type 'a' not compatible with type 'X' because the former is missing field 'x')";
     CHECK_EQ(expected, toString(result.errors[0]));
 }
@@ -532,8 +540,6 @@ TEST_CASE_FIXTURE(Fixture, "dont_allow_cyclic_unions_to_be_inferred")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "table_union_write_indirect")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
 
     CheckResult result = check(R"(
         type A = { x: number, y: (number) -> string } | { z: number, y: (number) -> string }
@@ -620,8 +626,6 @@ TEST_CASE_FIXTURE(Fixture, "union_of_functions_mentioning_generics")
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_mentioning_generic_typepacks")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
     CheckResult result = check(R"(
       function f<a...>()
         local x : (number, a...) -> (number?, a...)
@@ -640,8 +644,6 @@ could not be converted into
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_mismatching_arg_arities")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
     CheckResult result = check(R"(
         local x : (number) -> number?
         local y : ((number?) -> number) | ((number | string) -> nil) = x -- OK
@@ -658,8 +660,6 @@ could not be converted into
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_mismatching_result_arities")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
 
     CheckResult result = check(R"(
         local x : () -> (number | string)
@@ -677,8 +677,6 @@ could not be converted into
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_variadics")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
 
     CheckResult result = check(R"(
         local x : (...nil) -> (...number?)
@@ -696,8 +694,6 @@ could not be converted into
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_mismatching_arg_variadics")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
 
     CheckResult result = check(R"(
         local x : (number) -> ()
@@ -715,8 +711,6 @@ could not be converted into
 
 TEST_CASE_FIXTURE(Fixture, "union_of_functions_with_mismatching_result_variadics")
 {
-    ScopedFastFlag sff{"LuauIndentTypeMismatch", true};
-    ScopedFastInt sfi{"LuauIndentTypeMismatchMaxTypeLength", 10};
 
     CheckResult result = check(R"(
         local x : () -> (number?, ...number)
@@ -762,7 +756,10 @@ TEST_CASE_FIXTURE(Fixture, "less_greedy_unification_with_union_types_2")
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    CHECK_EQ("({| x: number |} | {| x: string |}) -> number | string", toString(requireType("f")));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("({ x: number } | { x: string }) -> number | string", toString(requireType("f")));
+    else
+        CHECK_EQ("({| x: number |} | {| x: string |}) -> number | string", toString(requireType("f")));
 }
 
 TEST_CASE_FIXTURE(Fixture, "union_table_any_property")
@@ -846,7 +843,7 @@ TEST_CASE_FIXTURE(Fixture, "suppress_errors_for_prop_lookup_of_a_union_that_incl
     registerHiddenTypes(&frontend);
 
     CheckResult result = check(R"(
-        local a : err | Not<nil>
+        local a = 5 :: err | Not<nil>
 
         local b = a.foo
     )");

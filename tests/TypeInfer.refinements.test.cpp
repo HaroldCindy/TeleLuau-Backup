@@ -289,7 +289,7 @@ TEST_CASE_FIXTURE(Fixture, "type_assertion_expr_carry_its_constraints")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "typeguard_in_if_condition_position")
 {
-    CheckResult result1 = check(R"(
+    CheckResult result = check(R"(
         function f(s: any, t: unknown)
             if type(s) == "number" then
                 local n = s
@@ -300,7 +300,7 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "typeguard_in_if_condition_position")
         end
     )");
 
-    LUAU_REQUIRE_NO_ERRORS(result1);
+    LUAU_REQUIRE_NO_ERRORS(result);
 
     // DCR changes refinements to preserve error suppression.
     if (FFlag::DebugLuauDeferredConstraintResolution)
@@ -308,7 +308,6 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "typeguard_in_if_condition_position")
     else
         CHECK_EQ("number", toString(requireTypeAtPosition({3, 26})));
     CHECK_EQ("number", toString(requireTypeAtPosition({6, 26})));
-
 }
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "typeguard_in_assert_position")
@@ -515,7 +514,11 @@ TEST_CASE_FIXTURE(Fixture, "free_type_is_equal_to_an_lvalue")
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    CHECK_EQ(toString(requireTypeAtPosition({3, 33})), "a");       // a == b
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ(toString(requireTypeAtPosition({3, 33})), "unknown");       // a == b
+    else
+        CHECK_EQ(toString(requireTypeAtPosition({3, 33})), "a");       // a == b
+
     CHECK_EQ(toString(requireTypeAtPosition({3, 36})), "string?"); // a == b
 }
 
@@ -532,7 +535,10 @@ TEST_CASE_FIXTURE(Fixture, "unknown_lvalue_is_not_synonymous_with_other_on_not_e
     LUAU_REQUIRE_NO_ERRORS(result);
 
     CHECK_EQ(toString(requireTypeAtPosition({3, 33})), "any");              // a ~= b
-    CHECK_EQ(toString(requireTypeAtPosition({3, 36})), "{| x: number |}?"); // a ~= b
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ(toString(requireTypeAtPosition({3, 36})), "{ x: number }?"); // a ~= b
+    else
+        CHECK_EQ(toString(requireTypeAtPosition({3, 36})), "{| x: number |}?"); // a ~= b
 }
 
 TEST_CASE_FIXTURE(Fixture, "string_not_equal_to_string_or_nil")
@@ -655,7 +661,10 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "typeguard_narrows_for_table")
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    CHECK_EQ("{| x: number |} | {| y: boolean |}", toString(requireTypeAtPosition({3, 28}))); // type(x) == "table"
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("{ x: number } | { y: boolean }", toString(requireTypeAtPosition({3, 28}))); // type(x) == "table"
+    else
+        CHECK_EQ("{| x: number |} | {| y: boolean |}", toString(requireTypeAtPosition({3, 28}))); // type(x) == "table"
     CHECK_EQ("string", toString(requireTypeAtPosition({5, 28})));                             // type(x) ~= "table"
 }
 
@@ -694,7 +703,10 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "type_guard_can_filter_for_intersection_of_ta
 
     ToStringOptions opts;
     opts.exhaustive = true;
-    CHECK_EQ("{| x: number |} & {| y: number |}", toString(requireTypeAtPosition({4, 28}), opts));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+        CHECK_EQ("{ x: number } & { y: number }", toString(requireTypeAtPosition({4, 28}), opts));
+    else
+        CHECK_EQ("{| x: number |} & {| y: number |}", toString(requireTypeAtPosition({4, 28}), opts));
     CHECK_EQ("nil", toString(requireTypeAtPosition({6, 28})));
 }
 
@@ -1213,8 +1225,17 @@ TEST_CASE_FIXTURE(RefinementClassFixture, "discriminate_from_isa_of_x")
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    CHECK_EQ(R"({| tag: "Part", x: Part |})", toString(requireTypeAtPosition({5, 28})));
-    CHECK_EQ(R"({| tag: "Folder", x: Folder |})", toString(requireTypeAtPosition({7, 28})));
+
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        CHECK_EQ(R"({ tag: "Part", x: Part })", toString(requireTypeAtPosition({5, 28})));
+        CHECK_EQ(R"({ tag: "Folder", x: Folder })", toString(requireTypeAtPosition({7, 28})));
+    }
+    else
+    {
+        CHECK_EQ(R"({| tag: "Part", x: Part |})", toString(requireTypeAtPosition({5, 28})));
+        CHECK_EQ(R"({| tag: "Folder", x: Folder |})", toString(requireTypeAtPosition({7, 28})));
+    }
 }
 
 TEST_CASE_FIXTURE(RefinementClassFixture, "typeguard_cast_free_table_to_vector")
@@ -1887,14 +1908,14 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "refine_unknown_to_table")
     // this test is DCR-only as an instance of DCR fixing a bug in the old solver
 
     CheckResult result = check(R"(
-        local a : unknown = nil
-
         local idx, val
 
-        if typeof(a) == "table" then
-            for i, v in a do
-                idx = i
-                val = v
+        local function f(a: unknown)
+            if typeof(a) == "table" then
+                for i, v in a do
+                    idx = i
+                    val = v
+                end
             end
         end
     )");
@@ -1919,6 +1940,69 @@ TEST_CASE_FIXTURE(BuiltinsFixture, "conditional_refinement_should_stay_error_sup
     )");
 
     LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "globals_can_be_narrowed_too")
+{
+    CheckResult result = check(R"(
+        if typeof(string) == 'string' then
+            local foo = string
+        end
+    )");
+
+    CHECK("never" == toString(requireTypeAtPosition(Position{2, 24})));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "luau_polyfill_isindexkey_refine_conjunction")
+{
+    CheckResult result = check(R"(
+        local function isIndexKey(k, contiguousLength)
+            return type(k) == "number"
+                and k <= contiguousLength -- nothing out of bounds
+                and 1 <= k -- nothing illegal for array indices
+                and math.floor(k) == k -- no float keys
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "luau_polyfill_isindexkey_refine_conjunction_variant")
+{
+    CheckResult result = check(R"(
+        local function isIndexKey(k, contiguousLength: number)
+            return type(k) == "number"
+                and k <= contiguousLength -- nothing out of bounds
+                and 1 <= k -- nothing illegal for array indices
+                and math.floor(k) == k -- no float keys
+        end
+    )");
+
+    LUAU_REQUIRE_NO_ERRORS(result);
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "globals_can_be_narrowed_too")
+{
+    CheckResult result = check(R"(
+        if typeof(string) == 'string' then
+            local foo = string
+        end
+    )");
+
+    CHECK("never" == toString(requireTypeAtPosition(Position{2, 24})));
+}
+
+TEST_CASE_FIXTURE(BuiltinsFixture, "ex")
+{
+    CheckResult result = check(R"(
+local function f(x: string | number)
+    if typeof((x)) == "string" then
+        local y = x
+    end
+end
+)");
+    TypeId t = requireTypeAtPosition({3, 18});
+    CHECK("string" == toString(t));
 }
 
 TEST_SUITE_END();

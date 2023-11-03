@@ -1,9 +1,13 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/DataFlowGraph.h"
 
-#include "Luau/Breadcrumb.h"
+#include "Luau/Ast.h"
+#include "Luau/Def.h"
+#include "Luau/Common.h"
 #include "Luau/Error.h"
-#include "Luau/Refinement.h"
+
+#include <algorithm>
+#include <optional>
 
 LUAU_FASTFLAG(DebugLuauFreezeArena)
 LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
@@ -11,74 +15,81 @@ LUAU_FASTFLAG(DebugLuauDeferredConstraintResolution)
 namespace Luau
 {
 
-NullableBreadcrumbId DataFlowGraph::getBreadcrumb(const AstExpr* expr) const
+const RefinementKey* RefinementKeyArena::leaf(DefId def)
 {
-    // We need to skip through AstExprGroup because DFG doesn't try its best to transitively
-    while (auto group = expr->as<AstExprGroup>())
-        expr = group->expr;
-    if (auto bc = astBreadcrumbs.find(expr))
-        return *bc;
+    return allocator.allocate(RefinementKey{nullptr, def, std::nullopt});
+}
+
+const RefinementKey* RefinementKeyArena::node(const RefinementKey* parent, DefId def, const std::string& propName)
+{
+    return allocator.allocate(RefinementKey{parent, def, propName});
+}
+
+DefId DataFlowGraph::getDef(const AstExpr* expr) const
+{
+    auto def = astDefs.find(expr);
+    LUAU_ASSERT(def);
+    return NotNull{*def};
+}
+
+std::optional<DefId> DataFlowGraph::getRValueDefForCompoundAssign(const AstExpr* expr) const
+{
+    auto def = compoundAssignBreadcrumbs.find(expr);
+    return def ? std::optional<DefId>(*def) : std::nullopt;
+}
+
+DefId DataFlowGraph::getDef(const AstLocal* local) const
+{
+    auto def = localDefs.find(local);
+    LUAU_ASSERT(def);
+    return NotNull{*def};
+}
+
+DefId DataFlowGraph::getDef(const AstStatDeclareGlobal* global) const
+{
+    auto def = declaredDefs.find(global);
+    LUAU_ASSERT(def);
+    return NotNull{*def};
+}
+
+DefId DataFlowGraph::getDef(const AstStatDeclareFunction* func) const
+{
+    auto def = declaredDefs.find(func);
+    LUAU_ASSERT(def);
+    return NotNull{*def};
+}
+
+const RefinementKey* DataFlowGraph::getRefinementKey(const AstExpr* expr) const
+{
+    if (auto key = astRefinementKeys.find(expr))
+        return *key;
+
     return nullptr;
 }
 
-BreadcrumbId DataFlowGraph::getBreadcrumb(const AstLocal* local) const
-{
-    auto bc = localBreadcrumbs.find(local);
-    LUAU_ASSERT(bc);
-    return NotNull{*bc};
-}
-
-BreadcrumbId DataFlowGraph::getBreadcrumb(const AstExprLocal* local) const
-{
-    auto bc = astBreadcrumbs.find(local);
-    LUAU_ASSERT(bc);
-    return NotNull{*bc};
-}
-
-BreadcrumbId DataFlowGraph::getBreadcrumb(const AstExprGlobal* global) const
-{
-    auto bc = astBreadcrumbs.find(global);
-    LUAU_ASSERT(bc);
-    return NotNull{*bc};
-}
-
-BreadcrumbId DataFlowGraph::getBreadcrumb(const AstStatDeclareGlobal* global) const
-{
-    auto bc = declaredBreadcrumbs.find(global);
-    LUAU_ASSERT(bc);
-    return NotNull{*bc};
-}
-
-BreadcrumbId DataFlowGraph::getBreadcrumb(const AstStatDeclareFunction* func) const
-{
-    auto bc = declaredBreadcrumbs.find(func);
-    LUAU_ASSERT(bc);
-    return NotNull{*bc};
-}
-
-NullableBreadcrumbId DfgScope::lookup(Symbol symbol) const
+std::optional<DefId> DfgScope::lookup(Symbol symbol) const
 {
     for (const DfgScope* current = this; current; current = current->parent)
     {
-        if (auto breadcrumb = current->bindings.find(symbol))
-            return *breadcrumb;
+        if (auto def = current->bindings.find(symbol))
+            return NotNull{*def};
     }
 
-    return nullptr;
+    return std::nullopt;
 }
 
-NullableBreadcrumbId DfgScope::lookup(DefId def, const std::string& key) const
+std::optional<DefId> DfgScope::lookup(DefId def, const std::string& key) const
 {
     for (const DfgScope* current = this; current; current = current->parent)
     {
         if (auto map = props.find(def))
         {
             if (auto it = map->find(key); it != map->end())
-                return it->second;
+                return NotNull{it->second};
         }
     }
 
-    return nullptr;
+    return std::nullopt;
 }
 
 DataFlowGraph DataFlowGraphBuilder::build(AstStatBlock* block, NotNull<InternalErrorReporter> handle)
@@ -92,8 +103,8 @@ DataFlowGraph DataFlowGraphBuilder::build(AstStatBlock* block, NotNull<InternalE
 
     if (FFlag::DebugLuauFreezeArena)
     {
-        builder.defs->allocator.freeze();
-        builder.breadcrumbs->allocator.freeze();
+        builder.defArena->allocator.freeze();
+        builder.keyArena->allocator.freeze();
     }
 
     return std::move(builder.graph);
@@ -214,10 +225,10 @@ void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatExpr* e)
 void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatLocal* l)
 {
     // We're gonna need a `visitExprList` and `visitVariadicExpr` (function calls and `...`)
-    std::vector<BreadcrumbId> bcs;
-    bcs.reserve(l->values.size);
+    std::vector<DefId> defs;
+    defs.reserve(l->values.size);
     for (AstExpr* e : l->values)
-        bcs.push_back(visitExpr(scope, e));
+        defs.push_back(visitExpr(scope, e).def);
 
     for (size_t i = 0; i < l->vars.size; ++i)
     {
@@ -225,10 +236,12 @@ void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatLocal* l)
         if (local->annotation)
             visitType(scope, local->annotation);
 
-        // We need to create a new breadcrumb with new defs to intentionally avoid alias tracking.
-        BreadcrumbId bc = breadcrumbs->add(nullptr, defs->freshCell(), i < bcs.size() ? bcs[i]->metadata : std::nullopt);
-        graph.localBreadcrumbs[local] = bc;
-        scope->bindings[local] = bc;
+        // We need to create a new def to intentionally avoid alias tracking, but we'd like to
+        // make sure that the non-aliased defs are also marked as a subscript for refinements.
+        bool subscripted = i < defs.size() && containsSubscriptedDefinition(defs[i]);
+        DefId def = defArena->freshCell(subscripted);
+        graph.localDefs[local] = def;
+        scope->bindings[local] = def;
     }
 }
 
@@ -244,10 +257,9 @@ void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatFor* f)
     if (f->var->annotation)
         visitType(forScope, f->var->annotation);
 
-    // TODO: RangeMetadata.
-    BreadcrumbId bc = breadcrumbs->add(nullptr, defs->freshCell());
-    graph.localBreadcrumbs[f->var] = bc;
-    scope->bindings[f->var] = bc;
+    DefId def = defArena->freshCell();
+    graph.localDefs[f->var] = def;
+    scope->bindings[f->var] = def;
 
     // TODO(controlflow): entry point has a back edge from exit point
     visit(forScope, f->body);
@@ -262,10 +274,9 @@ void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatForIn* f)
         if (local->annotation)
             visitType(forScope, local->annotation);
 
-        // TODO: IterMetadata (different from RangeMetadata)
-        BreadcrumbId bc = breadcrumbs->add(nullptr, defs->freshCell());
-        graph.localBreadcrumbs[local] = bc;
-        forScope->bindings[local] = bc;
+        DefId def = defArena->freshCell();
+        graph.localDefs[local] = def;
+        forScope->bindings[local] = def;
     }
 
     // TODO(controlflow): entry point has a back edge from exit point
@@ -278,11 +289,16 @@ void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatForIn* f)
 
 void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatAssign* a)
 {
-    for (AstExpr* r : a->values)
-        visitExpr(scope, r);
+    std::vector<DefId> defs;
+    defs.reserve(a->values.size);
+    for (AstExpr* e : a->values)
+        defs.push_back(visitExpr(scope, e).def);
 
-    for (AstExpr* l : a->vars)
-        visitLValue(scope, l);
+    for (size_t i = 0; i < a->vars.size; ++i)
+    {
+        AstExpr* v = a->vars.data[i];
+        visitLValue(scope, v, i < defs.size() ? defs[i] : defArena->freshCell());
+    }
 }
 
 void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatCompoundAssign* c)
@@ -291,12 +307,11 @@ void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatCompoundAssign* c)
     // but the `c->var` only has one pointer address, so we need to come up with a way to store both.
     // For now, it's not important because we don't have type states, but it is going to be important, e.g.
     //
-    // local a = 5 -- a[1]
-    // a += 5      -- a[2] = a[1] + 5
-    //
+    // local a = 5 -- a-1
+    // a += 5      -- a-2 = a-1 + 5
     // We can't just visit `c->var` as a rvalue and then separately traverse `c->var` as an lvalue, since that's O(n^2).
-    visitLValue(scope, c->var);
-    visitExpr(scope, c->value);
+    DefId def = visitExpr(scope, c->value).def;
+    visitLValue(scope, c->var, def, /* isCompoundAssignment */ true);
 }
 
 void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatFunction* f)
@@ -311,16 +326,16 @@ void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatFunction* f)
     //
     // which is evidence that references to variables must be a phi node of all possible definitions,
     // but for bug compatibility, we'll assume the same thing here.
-    visitLValue(scope, f->name);
+    DefId prototype = defArena->freshCell();
+    visitLValue(scope, f->name, prototype);
     visitExpr(scope, f->func);
 }
 
 void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatLocalFunction* l)
 {
-    BreadcrumbId bc = breadcrumbs->add(nullptr, defs->freshCell());
-    graph.localBreadcrumbs[l->name] = bc;
-    scope->bindings[l->name] = bc;
-
+    DefId def = defArena->freshCell();
+    graph.localDefs[l->name] = def;
+    scope->bindings[l->name] = def;
     visitExpr(scope, l->func);
 }
 
@@ -334,20 +349,18 @@ void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatTypeAlias* t)
 
 void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatDeclareGlobal* d)
 {
-    // TODO: AmbientDeclarationMetadata.
-    BreadcrumbId bc = breadcrumbs->add(nullptr, defs->freshCell());
-    graph.declaredBreadcrumbs[d] = bc;
-    scope->bindings[d->name] = bc;
+    DefId def = defArena->freshCell();
+    graph.declaredDefs[d] = def;
+    scope->bindings[d->name] = def;
 
     visitType(scope, d->type);
 }
 
 void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatDeclareFunction* d)
 {
-    // TODO: AmbientDeclarationMetadata.
-    BreadcrumbId bc = breadcrumbs->add(nullptr, defs->freshCell());
-    graph.declaredBreadcrumbs[d] = bc;
-    scope->bindings[d->name] = bc;
+    DefId def = defArena->freshCell();
+    graph.declaredDefs[d] = def;
+    scope->bindings[d->name] = def;
 
     DfgScope* unreachable = childScope(scope);
     visitGenerics(unreachable, d->generics);
@@ -375,116 +388,125 @@ void DataFlowGraphBuilder::visit(DfgScope* scope, AstStatError* error)
         visitExpr(unreachable, e);
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExpr* e)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExpr* e)
 {
-    if (auto g = e->as<AstExprGroup>())
-        return visitExpr(scope, g->expr);
-    else if (auto c = e->as<AstExprConstantNil>())
-        return breadcrumbs->add(nullptr, defs->freshCell()); // ok
-    else if (auto c = e->as<AstExprConstantBool>())
-        return breadcrumbs->add(nullptr, defs->freshCell()); // ok
-    else if (auto c = e->as<AstExprConstantNumber>())
-        return breadcrumbs->add(nullptr, defs->freshCell()); // ok
-    else if (auto c = e->as<AstExprConstantString>())
-        return breadcrumbs->add(nullptr, defs->freshCell()); // ok
-    else if (auto l = e->as<AstExprLocal>())
-        return visitExpr(scope, l);
-    else if (auto g = e->as<AstExprGlobal>())
-        return visitExpr(scope, g);
-    else if (auto v = e->as<AstExprVarargs>())
-        return breadcrumbs->add(nullptr, defs->freshCell()); // ok
-    else if (auto c = e->as<AstExprCall>())
-        return visitExpr(scope, c);
-    else if (auto i = e->as<AstExprIndexName>())
-        return visitExpr(scope, i);
-    else if (auto i = e->as<AstExprIndexExpr>())
-        return visitExpr(scope, i);
-    else if (auto f = e->as<AstExprFunction>())
-        return visitExpr(scope, f);
-    else if (auto t = e->as<AstExprTable>())
-        return visitExpr(scope, t);
-    else if (auto u = e->as<AstExprUnary>())
-        return visitExpr(scope, u);
-    else if (auto b = e->as<AstExprBinary>())
-        return visitExpr(scope, b);
-    else if (auto t = e->as<AstExprTypeAssertion>())
-        return visitExpr(scope, t);
-    else if (auto i = e->as<AstExprIfElse>())
-        return visitExpr(scope, i);
-    else if (auto i = e->as<AstExprInterpString>())
-        return visitExpr(scope, i);
-    else if (auto error = e->as<AstExprError>())
-        return visitExpr(scope, error);
-    else
-        handle->ice("Unknown AstExpr in DataFlowGraphBuilder::visitExpr");
+    auto go = [&]() -> DataFlowResult {
+        if (auto g = e->as<AstExprGroup>())
+            return visitExpr(scope, g);
+        else if (auto c = e->as<AstExprConstantNil>())
+            return {defArena->freshCell(), nullptr}; // ok
+        else if (auto c = e->as<AstExprConstantBool>())
+            return {defArena->freshCell(), nullptr}; // ok
+        else if (auto c = e->as<AstExprConstantNumber>())
+            return {defArena->freshCell(), nullptr}; // ok
+        else if (auto c = e->as<AstExprConstantString>())
+            return {defArena->freshCell(), nullptr}; // ok
+        else if (auto l = e->as<AstExprLocal>())
+            return visitExpr(scope, l);
+        else if (auto g = e->as<AstExprGlobal>())
+            return visitExpr(scope, g);
+        else if (auto v = e->as<AstExprVarargs>())
+            return {defArena->freshCell(), nullptr}; // ok
+        else if (auto c = e->as<AstExprCall>())
+            return visitExpr(scope, c);
+        else if (auto i = e->as<AstExprIndexName>())
+            return visitExpr(scope, i);
+        else if (auto i = e->as<AstExprIndexExpr>())
+            return visitExpr(scope, i);
+        else if (auto f = e->as<AstExprFunction>())
+            return visitExpr(scope, f);
+        else if (auto t = e->as<AstExprTable>())
+            return visitExpr(scope, t);
+        else if (auto u = e->as<AstExprUnary>())
+            return visitExpr(scope, u);
+        else if (auto b = e->as<AstExprBinary>())
+            return visitExpr(scope, b);
+        else if (auto t = e->as<AstExprTypeAssertion>())
+            return visitExpr(scope, t);
+        else if (auto i = e->as<AstExprIfElse>())
+            return visitExpr(scope, i);
+        else if (auto i = e->as<AstExprInterpString>())
+            return visitExpr(scope, i);
+        else if (auto error = e->as<AstExprError>())
+            return visitExpr(scope, error);
+        else
+            handle->ice("Unknown AstExpr in DataFlowGraphBuilder::visitExpr");
+    };
+
+    auto [def, key] = go();
+    graph.astDefs[e] = def;
+    if (key)
+        graph.astRefinementKeys[e] = key;
+    return {def, key};
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprLocal* l)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprGroup* group)
 {
-    NullableBreadcrumbId breadcrumb = scope->lookup(l->local);
-    if (!breadcrumb)
-        handle->ice("AstExprLocal came before its declaration?");
-
-    graph.astBreadcrumbs[l] = breadcrumb;
-    return NotNull{breadcrumb};
+    return visitExpr(scope, group->expr);
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprGlobal* g)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprLocal* l)
 {
-    NullableBreadcrumbId bc = scope->lookup(g->name);
-    if (!bc)
+    if (auto def = scope->lookup(l->local))
     {
-        bc = breadcrumbs->add(nullptr, defs->freshCell());
-        moduleScope->bindings[g->name] = bc;
+        const RefinementKey* key = keyArena->leaf(*def);
+        return {*def, key};
     }
 
-    graph.astBreadcrumbs[g] = bc;
-    return NotNull{bc};
+    handle->ice("DFG: AstExprLocal came before its declaration?");
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprCall* c)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprGlobal* g)
+{
+    if (auto def = scope->lookup(g->name))
+        return {*def, keyArena->leaf(*def)};
+
+    DefId def = defArena->freshCell();
+    moduleScope->bindings[g->name] = def;
+    return {def, keyArena->leaf(def)};
+}
+
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprCall* c)
 {
     visitExpr(scope, c->func);
 
     for (AstExpr* arg : c->args)
         visitExpr(scope, arg);
 
-    return breadcrumbs->add(nullptr, defs->freshCell());
+    return {defArena->freshCell(), nullptr};
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprIndexName* i)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprIndexName* i)
 {
-    BreadcrumbId parentBreadcrumb = visitExpr(scope, i->expr);
+    auto [parentDef, parentKey] = visitExpr(scope, i->expr);
 
-    std::string key = i->index.value;
-    NullableBreadcrumbId& propBreadcrumb = moduleScope->props[parentBreadcrumb->def][key];
-    if (!propBreadcrumb)
-        propBreadcrumb = breadcrumbs->emplace<FieldMetadata>(parentBreadcrumb, defs->freshCell(), key);
+    std::string index = i->index.value;
+    auto& propDef = moduleScope->props[parentDef][index];
+    if (!propDef)
+        propDef = defArena->freshCell();
 
-    graph.astBreadcrumbs[i] = propBreadcrumb;
-    return NotNull{propBreadcrumb};
+    return {NotNull{propDef}, keyArena->node(parentKey, NotNull{propDef}, index)};
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprIndexExpr* i)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprIndexExpr* i)
 {
-    BreadcrumbId parentBreadcrumb = visitExpr(scope, i->expr);
-    BreadcrumbId key = visitExpr(scope, i->index);
+    auto [parentDef, parentKey] = visitExpr(scope, i->expr);
+    visitExpr(scope, i->index);
 
     if (auto string = i->index->as<AstExprConstantString>())
     {
-        std::string key{string->value.data, string->value.size};
-        NullableBreadcrumbId& propBreadcrumb = moduleScope->props[parentBreadcrumb->def][key];
-        if (!propBreadcrumb)
-            propBreadcrumb = breadcrumbs->emplace<FieldMetadata>(parentBreadcrumb, defs->freshCell(), key);
+        std::string index{string->value.data, string->value.size};
+        auto& propDef = moduleScope->props[parentDef][index];
+        if (!propDef)
+            propDef = defArena->freshCell();
 
-        graph.astBreadcrumbs[i] = NotNull{propBreadcrumb};
-        return NotNull{propBreadcrumb};
+        return {NotNull{propDef}, keyArena->node(parentKey, NotNull{propDef}, index)};
     }
 
-    return breadcrumbs->emplace<SubscriptMetadata>(nullptr, defs->freshCell(), key);
+    return {defArena->freshCell(/* subscripted= */true), nullptr};
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprFunction* f)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprFunction* f)
 {
     DfgScope* signatureScope = childScope(scope);
 
@@ -493,10 +515,9 @@ BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprFunction* f
         // There's no syntax for `self` to have an annotation if using `function t:m()`
         LUAU_ASSERT(!self->annotation);
 
-        // TODO: ParameterMetadata.
-        BreadcrumbId bc = breadcrumbs->add(nullptr, defs->freshCell());
-        graph.localBreadcrumbs[self] = bc;
-        signatureScope->bindings[self] = bc;
+        DefId def = defArena->freshCell();
+        graph.localDefs[self] = def;
+        signatureScope->bindings[self] = def;
     }
 
     for (AstLocal* param : f->args)
@@ -504,10 +525,9 @@ BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprFunction* f
         if (param->annotation)
             visitType(signatureScope, param->annotation);
 
-        // TODO: ParameterMetadata.
-        BreadcrumbId bc = breadcrumbs->add(nullptr, defs->freshCell());
-        graph.localBreadcrumbs[param] = bc;
-        signatureScope->bindings[param] = bc;
+        DefId def = defArena->freshCell();
+        graph.localDefs[param] = def;
+        signatureScope->bindings[param] = def;
     }
 
     if (f->varargAnnotation)
@@ -526,10 +546,10 @@ BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprFunction* f
     // g() --> 5
     visit(signatureScope, f->body);
 
-    return breadcrumbs->add(nullptr, defs->freshCell());
+    return {defArena->freshCell(), nullptr};
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprTable* t)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprTable* t)
 {
     for (AstExprTable::Item item : t->items)
     {
@@ -538,132 +558,132 @@ BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprTable* t)
         visitExpr(scope, item.value);
     }
 
-    return breadcrumbs->add(nullptr, defs->freshCell());
+    return {defArena->freshCell(), nullptr};
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprUnary* u)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprUnary* u)
 {
     visitExpr(scope, u->expr);
 
-    return breadcrumbs->add(nullptr, defs->freshCell());
+    return {defArena->freshCell(), nullptr};
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprBinary* b)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprBinary* b)
 {
     visitExpr(scope, b->left);
     visitExpr(scope, b->right);
 
-    return breadcrumbs->add(nullptr, defs->freshCell());
+    return {defArena->freshCell(), nullptr};
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprTypeAssertion* t)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprTypeAssertion* t)
 {
-    // TODO: TypeAssertionMetadata?
-    BreadcrumbId bc = visitExpr(scope, t->expr);
+    auto [def, key] = visitExpr(scope, t->expr);
     visitType(scope, t->annotation);
 
-    return bc;
+    return {def, key};
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprIfElse* i)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprIfElse* i)
 {
     visitExpr(scope, i->condition);
     visitExpr(scope, i->trueExpr);
     visitExpr(scope, i->falseExpr);
 
-    return breadcrumbs->add(nullptr, defs->freshCell());
+    return {defArena->freshCell(), nullptr};
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprInterpString* i)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprInterpString* i)
 {
     for (AstExpr* e : i->expressions)
         visitExpr(scope, e);
 
-    return breadcrumbs->add(nullptr, defs->freshCell());
+    return {defArena->freshCell(), nullptr};
 }
 
-BreadcrumbId DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprError* error)
+DataFlowResult DataFlowGraphBuilder::visitExpr(DfgScope* scope, AstExprError* error)
 {
     DfgScope* unreachable = childScope(scope);
     for (AstExpr* e : error->expressions)
         visitExpr(unreachable, e);
 
-    return breadcrumbs->add(nullptr, defs->freshCell());
+    return {defArena->freshCell(), nullptr};
 }
 
-void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExpr* e)
+void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExpr* e, DefId incomingDef, bool isCompoundAssignment)
 {
     if (auto l = e->as<AstExprLocal>())
-        return visitLValue(scope, l);
+        return visitLValue(scope, l, incomingDef, isCompoundAssignment);
     else if (auto g = e->as<AstExprGlobal>())
-        return visitLValue(scope, g);
+        return visitLValue(scope, g, incomingDef, isCompoundAssignment);
     else if (auto i = e->as<AstExprIndexName>())
-        return visitLValue(scope, i);
+        return visitLValue(scope, i, incomingDef);
     else if (auto i = e->as<AstExprIndexExpr>())
-        return visitLValue(scope, i);
+        return visitLValue(scope, i, incomingDef);
     else if (auto error = e->as<AstExprError>())
-    {
-        visitExpr(scope, error); // TODO: is this right?
-        return;
-    }
+        return visitLValue(scope, error, incomingDef);
     else
         handle->ice("Unknown AstExpr in DataFlowGraphBuilder::visitLValue");
 }
 
-void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprLocal* l)
+void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprLocal* l, DefId incomingDef, bool isCompoundAssignment)
 {
-    // Bug compatibility: we don't support type states yet, so we need to do this.
-    NullableBreadcrumbId bc = scope->lookup(l->local);
-    LUAU_ASSERT(bc);
-
-    graph.astBreadcrumbs[l] = bc;
-    scope->bindings[l->local] = bc;
-}
-
-void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprGlobal* g)
-{
-    // Bug compatibility: we don't support type states yet, so we need to do this.
-    NullableBreadcrumbId bc = scope->lookup(g->name);
-    if (!bc)
-        bc = breadcrumbs->add(nullptr, defs->freshCell());
-
-    graph.astBreadcrumbs[g] = bc;
-    scope->bindings[g->name] = bc;
-}
-
-void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprIndexName* i)
-{
-    // Bug compatibility: we don't support type states yet, so we need to do this.
-    BreadcrumbId parentBreadcrumb = visitExpr(scope, i->expr);
-
-    std::string key = i->index.value;
-    NullableBreadcrumbId propBreadcrumb = scope->lookup(parentBreadcrumb->def, key);
-    if (!propBreadcrumb)
+    // We need to keep the previous breadcrumb around for a compound assignment.
+    if (isCompoundAssignment)
     {
-        propBreadcrumb = breadcrumbs->emplace<FieldMetadata>(parentBreadcrumb, defs->freshCell(), key);
-        moduleScope->props[parentBreadcrumb->def][key] = propBreadcrumb;
+        if (auto def = scope->lookup(l->local))
+            graph.compoundAssignBreadcrumbs[l] = *def;
     }
 
-    graph.astBreadcrumbs[i] = propBreadcrumb;
+    // In order to avoid alias tracking, we need to clip the reference to the parent def.
+    DefId updated = defArena->freshCell(containsSubscriptedDefinition(incomingDef));
+    graph.astDefs[l] = updated;
+    scope->bindings[l->local] = updated;
 }
 
-void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprIndexExpr* i)
+void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprGlobal* g, DefId incomingDef, bool isCompoundAssignment)
 {
-    BreadcrumbId parentBreadcrumb = visitExpr(scope, i->expr);
+    // We need to keep the previous breadcrumb around for a compound assignment.
+    if (isCompoundAssignment)
+    {
+        if (auto def = scope->lookup(g->name))
+            graph.compoundAssignBreadcrumbs[g] = *def;
+    }
+
+    // In order to avoid alias tracking, we need to clip the reference to the parent def.
+    DefId updated = defArena->freshCell(containsSubscriptedDefinition(incomingDef));
+    graph.astDefs[g] = updated;
+    scope->bindings[g->name] = updated;
+}
+
+void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprIndexName* i, DefId incomingDef)
+{
+    DefId parentDef = visitExpr(scope, i->expr).def;
+
+    DefId updated = defArena->freshCell(containsSubscriptedDefinition(incomingDef));
+    graph.astDefs[i] = updated;
+    scope->props[parentDef][i->index.value] = updated;
+}
+
+void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprIndexExpr* i, DefId incomingDef)
+{
+    DefId parentDef = visitExpr(scope, i->expr).def;
     visitExpr(scope, i->index);
 
     if (auto string = i->index->as<AstExprConstantString>())
     {
-        std::string key{string->value.data, string->value.size};
-        NullableBreadcrumbId propBreadcrumb = scope->lookup(parentBreadcrumb->def, key);
-        if (!propBreadcrumb)
-        {
-            propBreadcrumb = breadcrumbs->add(parentBreadcrumb, parentBreadcrumb->def);
-            moduleScope->props[parentBreadcrumb->def][key] = propBreadcrumb;
-        }
-
-        graph.astBreadcrumbs[i] = propBreadcrumb;
+        DefId updated = defArena->freshCell(containsSubscriptedDefinition(incomingDef));
+        graph.astDefs[i] = updated;
+        scope->props[parentDef][string->value.data] = updated;
     }
+
+    graph.astDefs[i] = defArena->freshCell();
+}
+
+void DataFlowGraphBuilder::visitLValue(DfgScope* scope, AstExprError* error, DefId incomingDef)
+{
+    DefId def = visitExpr(scope, error).def;
+    graph.astDefs[error] = def;
 }
 
 void DataFlowGraphBuilder::visitType(DfgScope* scope, AstType* t)

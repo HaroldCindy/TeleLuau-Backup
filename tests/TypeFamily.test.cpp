@@ -1,5 +1,9 @@
 // This file is part of the Luau programming language and is licensed under MIT License; see LICENSE.txt for details
 #include "Luau/TypeFamily.h"
+
+#include "Luau/ConstraintSolver.h"
+#include "Luau/NotNull.h"
+#include "Luau/TxnLog.h"
 #include "Luau/Type.h"
 
 #include "Fixture.h"
@@ -19,21 +23,20 @@ struct FamilyFixture : Fixture
     {
         swapFamily = TypeFamily{/* name */ "Swap",
             /* reducer */
-            [](std::vector<TypeId> tys, std::vector<TypePackId> tps, NotNull<TypeArena> arena, NotNull<BuiltinTypes> builtins,
-                NotNull<const TxnLog> log, NotNull<Scope> scope, NotNull<Normalizer> normalizer) -> TypeFamilyReductionResult<TypeId> {
+            [](std::vector<TypeId> tys, std::vector<TypePackId> tps, NotNull<TypeFamilyContext> ctx) -> TypeFamilyReductionResult<TypeId> {
                 LUAU_ASSERT(tys.size() == 1);
-                TypeId param = log->follow(tys.at(0));
+                TypeId param = follow(tys.at(0));
 
                 if (isString(param))
                 {
-                    return TypeFamilyReductionResult<TypeId>{builtins->numberType, false, {}, {}};
+                    return TypeFamilyReductionResult<TypeId>{ctx->builtins->numberType, false, {}, {}};
                 }
                 else if (isNumber(param))
                 {
-                    return TypeFamilyReductionResult<TypeId>{builtins->stringType, false, {}, {}};
+                    return TypeFamilyReductionResult<TypeId>{ctx->builtins->stringType, false, {}, {}};
                 }
-                else if (log->get<BlockedType>(param) || log->get<FreeType>(param) || log->get<PendingExpansionType>(param) ||
-                         log->get<TypeFamilyInstanceType>(param))
+                else if (is<BlockedType>(param) || is<PendingExpansionType>(param) || is<TypeFamilyInstanceType>(param) ||
+                         (ctx->solver && ctx->solver->hasUnresolvedConstraints(param)))
                 {
                     return TypeFamilyReductionResult<TypeId>{std::nullopt, false, {param}, {}};
                 }
@@ -231,7 +234,8 @@ TEST_CASE_FIXTURE(Fixture, "internal_families_raise_errors")
 
 TEST_CASE_FIXTURE(BuiltinsFixture, "type_families_inhabited_with_normalization")
 {
-    ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
+    if (!FFlag::DebugLuauDeferredConstraintResolution)
+        return;
 
     CheckResult result = check(R"(
         local useGridConfig : any

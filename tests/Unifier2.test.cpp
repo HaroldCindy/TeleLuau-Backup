@@ -18,7 +18,7 @@ struct Unifier2Fixture
     BuiltinTypes builtinTypes;
     Scope scope{builtinTypes.anyTypePack};
     InternalErrorReporter iceReporter;
-    Unifier2 u2{NotNull{&arena}, NotNull{&builtinTypes}, NotNull{&iceReporter}};
+    Unifier2 u2{NotNull{&arena}, NotNull{&builtinTypes}, NotNull{&scope}, NotNull{&iceReporter}};
     ToStringOptions opts;
 
     ScopedFastFlag sff{"DebugLuauDeferredConstraintResolution", true};
@@ -35,6 +35,11 @@ struct Unifier2Fixture
     }
 
     std::string toString(TypeId ty)
+    {
+        return ::Luau::toString(ty, opts);
+    }
+
+    std::string toString(TypePackId ty)
     {
         return ::Luau::toString(ty, opts);
     }
@@ -81,18 +86,12 @@ TEST_CASE_FIXTURE(Unifier2Fixture, "T <: U")
 
 TEST_CASE_FIXTURE(Unifier2Fixture, "(string) -> () <: (X) -> Y...")
 {
-    TypeId stringToUnit = arena.addType(FunctionType{
-        arena.addTypePack({builtinTypes.stringType}),
-        arena.addTypePack({})
-    });
+    TypeId stringToUnit = arena.addType(FunctionType{arena.addTypePack({builtinTypes.stringType}), arena.addTypePack({})});
 
     auto [x, xFree] = freshType();
     TypePackId y = arena.freshTypePack(&scope);
 
-    TypeId xToY = arena.addType(FunctionType{
-        arena.addTypePack({x}),
-        y
-    });
+    TypeId xToY = arena.addType(FunctionType{arena.addTypePack({x}), y});
 
     u2.unify(stringToUnit, xToY);
 
@@ -103,6 +102,82 @@ TEST_CASE_FIXTURE(Unifier2Fixture, "(string) -> () <: (X) -> Y...")
 
     CHECK(0 == yPack->head.size());
     CHECK(!yPack->tail);
+}
+
+TEST_CASE_FIXTURE(Unifier2Fixture, "unify_binds_free_subtype_tail_pack")
+{
+    TypePackId numberPack = arena.addTypePack({builtinTypes.numberType});
+
+    TypePackId freeTail = arena.freshTypePack(&scope);
+    TypeId freeHead = arena.addType(FreeType{&scope, builtinTypes.neverType, builtinTypes.unknownType});
+    TypePackId freeAndFree = arena.addTypePack({freeHead}, freeTail);
+
+    u2.unify(freeAndFree, numberPack);
+
+    CHECK("('a <: number)" == toString(freeAndFree));
+}
+
+TEST_CASE_FIXTURE(Unifier2Fixture, "unify_binds_free_supertype_tail_pack")
+{
+    TypePackId numberPack = arena.addTypePack({builtinTypes.numberType});
+
+    TypePackId freeTail = arena.freshTypePack(&scope);
+    TypeId freeHead = arena.addType(FreeType{&scope, builtinTypes.neverType, builtinTypes.unknownType});
+    TypePackId freeAndFree = arena.addTypePack({freeHead}, freeTail);
+
+    u2.unify(numberPack, freeAndFree);
+
+    CHECK("(number <: 'a)" == toString(freeAndFree));
+}
+
+TEST_CASE_FIXTURE(Unifier2Fixture, "generalize_a_type_that_is_bounded_by_another_generalizable_type")
+{
+    auto [t1, ft1] = freshType();
+    auto [t2, ft2] = freshType();
+
+    // t2 <: t1 <: unknown
+    // unknown <: t2 <: t1
+
+    ft1->lowerBound = t2;
+    ft2->upperBound = t1;
+    ft2->lowerBound = builtinTypes.unknownType;
+
+    auto t2generalized = u2.generalize(t2);
+    REQUIRE(t2generalized);
+
+    CHECK(follow(t1) == follow(t2));
+
+    auto t1generalized = u2.generalize(t1);
+    REQUIRE(t1generalized);
+
+    CHECK(builtinTypes.unknownType == follow(t1));
+    CHECK(builtinTypes.unknownType == follow(t2));
+}
+
+// Same as generalize_a_type_that_is_bounded_by_another_generalizable_type
+// except that we generalize the types in the opposite order
+TEST_CASE_FIXTURE(Unifier2Fixture, "generalize_a_type_that_is_bounded_by_another_generalizable_type_in_reverse_order")
+{
+    auto [t1, ft1] = freshType();
+    auto [t2, ft2] = freshType();
+
+    // t2 <: t1 <: unknown
+    // unknown <: t2 <: t1
+
+    ft1->lowerBound = t2;
+    ft2->upperBound = t1;
+    ft2->lowerBound = builtinTypes.unknownType;
+
+    auto t1generalized = u2.generalize(t1);
+    REQUIRE(t1generalized);
+
+    CHECK(follow(t1) == follow(t2));
+
+    auto t2generalized = u2.generalize(t2);
+    REQUIRE(t2generalized);
+
+    CHECK(builtinTypes.unknownType == follow(t1));
+    CHECK(builtinTypes.unknownType == follow(t2));
 }
 
 TEST_SUITE_END();

@@ -85,6 +85,7 @@ public:
     void test(OperandX64 lhs, OperandX64 rhs);
     void lea(OperandX64 lhs, OperandX64 rhs);
     void setcc(ConditionX64 cond, OperandX64 op);
+    void cmov(ConditionX64 cond, RegisterX64 lhs, OperandX64 rhs);
 
     void push(OperandX64 op);
     void pop(OperandX64 op);
@@ -105,6 +106,7 @@ public:
 
     void bsr(RegisterX64 dst, OperandX64 src);
     void bsf(RegisterX64 dst, OperandX64 src);
+    void bswap(RegisterX64 dst);
 
     // Code alignment
     void nop(uint32_t length = 1);
