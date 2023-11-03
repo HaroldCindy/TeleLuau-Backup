@@ -35,7 +35,8 @@ typedef uint32 Instruction;
 #define LUA_TFUNCTION		7
 #define LUA_TUSERDATA		8
 #define LUA_TTHREAD		9
-#define LUA_NUMTAGS		10
+#define LUA_TBUFFER		10
+#define LUA_NUMTAGS		11
 
 #define LUA_TPROTO	LUA_NUMTAGS
 #define LUA_TUPVAL	(LUA_NUMTAGS+1)
@@ -59,6 +60,7 @@ typedef enum <uint8_t> {
     ET_FUNCTION = LUA_TFUNCTION,
     ET_USERDATA = LUA_TUSERDATA,
     ET_THREAD = LUA_TTHREAD,
+    ET_BUFFER = LUA_TBUFFER,
     ET_PROTO = LUA_TPROTO,
     ET_UPVAL = LUA_TUPVAL,
     ET_PERMANENT = ERIS_PERMANENT,
@@ -101,12 +103,12 @@ typedef enum <uint8_t> eris_CIKind {
 
 struct Header;
 struct Object;
-struct Number;
 struct String;
 struct Table;
 struct Closure;
 struct Userdata;
 struct Thread;
+struct Buffer;
 struct Proto;
 struct UpVal;
 struct PermKey;
@@ -208,6 +210,8 @@ typedef struct {
             break;
         case ET_THREAD:
             Thread val; break;
+        case ET_BUFFER:
+            Buffer val; break;
         case ET_PROTO:
             Proto val; break;
         case ET_UPVAL:
@@ -233,6 +237,11 @@ typedef struct {
     size_t length;      /* The length of the string */
     char str[length];   /* The actual string (not always null terminated) */
 } String <read=this.str>;
+
+typedef struct {
+    size_t length;      /* The length of the buffer */
+    char data[length];   /* The actual buffer data */
+} Buffer <read=this.data>;
 
 struct Table {
     uint8_t read_only;

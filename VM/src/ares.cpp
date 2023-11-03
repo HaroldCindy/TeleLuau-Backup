@@ -43,6 +43,7 @@ THE SOFTWARE.
 #include "lualib.h"
 
 /* Internal Lua headers. */
+#include "lbuffer.h"
 #include "ldo.h"
 #include "lfunc.h"
 #include "lgc.h"
@@ -950,6 +951,33 @@ u_string(Info *info) {                                                 /* ... */
   registerobject(info);
 
   eris_assert(lua_type(info->L, -1) == LUA_TSTRING);
+}
+
+
+/** ======================================================================== */
+
+
+static void
+p_buffer(Info *info) {                                            /* ... buf */
+  const TValue * buf_tv = luaA_toobject(info->L, -1);
+  eris_assert(ttisbuffer(buf_tv));
+  Buffer *buf = bufvalue(buf_tv);
+  WRITE_VALUE(buf->len, size_t);
+  WRITE_RAW(buf->data, buf->len);
+}
+
+static void
+u_buffer(Info *info) {                                                /* ... */
+  eris_checkstack(info->L, 2);
+  {
+    /* TODO Can we avoid this copy somehow? (Without it getting too nasty) */
+    const size_t length = READ_VALUE(size_t);
+    char *buf_data = (char *)lua_newbuffer(info->L, length);      /* ... buf */
+    READ_RAW(buf_data, length);
+  }
+  registerobject(info);
+
+  eris_assert(lua_type(info->L, -1) == LUA_TBUFFER);
 }
 
 /*
@@ -2404,6 +2432,9 @@ persist_typed(Info *info, int type) {                 /* perms reftbl ... obj */
     case LUA_TSTRING:
       p_string(info);
       break;
+    case LUA_TBUFFER:
+      p_buffer(info);
+      break;
     case LUA_TTABLE:
       p_table(info);
       break;
@@ -2565,6 +2596,9 @@ unpersist(Info *info) {                                   /* perms reftbl ... */
         break;
       case LUA_TSTRING:
         u_string(info);
+        break;
+      case LUA_TBUFFER:
+        u_buffer(info);
         break;
       case LUA_TTABLE:
         u_table(info);

@@ -62,6 +62,11 @@ local function encode_string(val)
 end
 
 
+local function encode_buffer(val)
+  return encode(buffer.tostring(val))
+end
+
+
 local function encode_number(val)
   -- Check for NaN, -inf and inf
   if val ~= val then
@@ -78,6 +83,7 @@ local type_func_map = {
   [ "nil"     ] = encode_nil,
   [ "table"   ] = encode_table,
   [ "string"  ] = encode_string,
+  [ "buffer"  ] = encode_buffer,
   [ "number"  ] = encode_number,
   [ "boolean" ] = tostring,
   [ "vector"  ] = tostring,
@@ -162,6 +168,12 @@ assert_round_trips(true)
 assert_round_trips(nil)
 assert_round_trips(0/0)
 assert_round_trips({1, 2, nil, 4})
+
+-- test buffers
+local b = buffer.create(10)
+buffer.fill(b, 0, 0x61)
+assert_round_trips(b)
+
 -- This is dependent on iteration order not being invalidated!
 assert_round_trips({foo=1, bar=2, quux=3})
 assert_round_trips({foo=1, bar=2, quux=3, 1, nil, "2"})
