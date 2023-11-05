@@ -23,7 +23,6 @@ The changes to Luau proper are pretty minimal and mainly involve adding hooks to
 * * This could do with some tuning to make GC more likely as a fork's soft memory limit approaches
 * Pre-emptive scheduling is not yet implemented, an extensible scheduler interface is planned.
 
-<<<<<<< HEAD
 # Contributing
 
 Sure! PRs are welcome, as are discussions and emails. Truth be told, I'm using this to learn Lua and VM design by
