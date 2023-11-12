@@ -391,6 +391,7 @@ const Instruction* executeGETTABLEKS(lua_State* L, const Instruction* pc, StkId 
         Table* h = hvalue(rb);
 
         // we ignore the fast path that checks for the cached slot since IrTranslation already checks for it.
+
         if (!h->metatable)
         {
             // fast-path: value is not in expected slot, but the table lookup doesn't involve metatable
@@ -502,6 +503,7 @@ const Instruction* executeSETTABLEKS(lua_State* L, const Instruction* pc, StkId 
         Table* h = hvalue(rb);
 
         // we ignore the fast path that checks for the cached slot since IrTranslation already checks for it.
+
         if (fastnotm(h->metatable, TM_NEWINDEX) && !h->readonly)
         {
             VM_PROTECT_PC(); // set may fail
