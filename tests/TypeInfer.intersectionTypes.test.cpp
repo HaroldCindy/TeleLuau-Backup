@@ -529,7 +529,7 @@ could not be converted into
 TEST_CASE_FIXTURE(Fixture, "intersection_of_tables_with_top_properties")
 {
     CheckResult result = check(R"(
-        local x : { p : number?, q : any } & { p : unknown, q : string? }
+        local x : { p : number?, q : any } & { p : unknown, q : string? } = { p = 123, q = "foo" }
         local y : { p : number?, q : string? } = x -- OK
         local z : { p : string?, q : number? } = x -- Not OK
     )");
@@ -976,7 +976,6 @@ local y = x["Bar"]
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
-#if 0
 TEST_CASE_FIXTURE(Fixture, "cli_80596_simplify_degenerate_intersections")
 {
     ScopedFastFlag dcr{"DebugLuauDeferredConstraintResolution", true};
@@ -1026,6 +1025,5 @@ TEST_CASE_FIXTURE(Fixture, "cli_80596_simplify_more_realistic_intersections")
 
     LUAU_REQUIRE_ERRORS(result);
 }
-#endif
 
 TEST_SUITE_END();

@@ -2,6 +2,7 @@
 
 #include "Luau/AstQuery.h"
 #include "Luau/BuiltinDefinitions.h"
+#include "Luau/Frontend.h"
 #include "Luau/Scope.h"
 #include "Luau/TypeInfer.h"
 #include "Luau/Type.h"
@@ -27,8 +28,7 @@ TEST_CASE_FIXTURE(Fixture, "tc_hello_world")
     CheckResult result = check("local a = 7");
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    TypeId aType = requireType("a");
-    CHECK_EQ(getPrimitiveType(aType), PrimitiveType::Number);
+    CHECK("number" == toString(requireType("a")));
 }
 
 TEST_CASE_FIXTURE(Fixture, "tc_propagation")
@@ -43,21 +43,39 @@ TEST_CASE_FIXTURE(Fixture, "tc_propagation")
 TEST_CASE_FIXTURE(Fixture, "tc_error")
 {
     CheckResult result = check("local a = 7   local b = 'hi'   a = b");
-    LUAU_REQUIRE_ERROR_COUNT(1, result);
 
-    CHECK_EQ(
-        result.errors[0], (TypeError{Location{Position{0, 35}, Position{0, 36}}, TypeMismatch{builtinTypes->numberType, builtinTypes->stringType}}));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        LUAU_REQUIRE_NO_ERRORS(result);
+        CHECK("number | string" == toString(requireType("a")));
+    }
+    else
+    {
+        LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+        CHECK_EQ(
+            result.errors[0], (TypeError{Location{Position{0, 35}, Position{0, 36}}, TypeMismatch{builtinTypes->numberType, builtinTypes->stringType}}));
+    }
 }
 
 TEST_CASE_FIXTURE(Fixture, "tc_error_2")
 {
     CheckResult result = check("local a = 7   a = 'hi'");
-    LUAU_REQUIRE_ERROR_COUNT(1, result);
 
-    CHECK_EQ(result.errors[0], (TypeError{Location{Position{0, 18}, Position{0, 22}}, TypeMismatch{
-                                                                                          requireType("a"),
-                                                                                          builtinTypes->stringType,
-                                                                                      }}));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        LUAU_REQUIRE_NO_ERRORS(result);
+        CHECK("number | string" == toString(requireType("a")));
+    }
+    else
+    {
+        LUAU_REQUIRE_ERROR_COUNT(1, result);
+
+        CHECK_EQ(result.errors[0], (TypeError{Location{Position{0, 18}, Position{0, 22}}, TypeMismatch{
+                                                                                            requireType("a"),
+                                                                                            builtinTypes->stringType,
+                                                                                        }}));
+    }
 }
 
 TEST_CASE_FIXTURE(Fixture, "infer_locals_with_nil_value")
@@ -65,8 +83,15 @@ TEST_CASE_FIXTURE(Fixture, "infer_locals_with_nil_value")
     CheckResult result = check("local f = nil; f = 'hello world'");
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    TypeId ty = requireType("f");
-    CHECK_EQ(getPrimitiveType(ty), PrimitiveType::String);
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        CHECK("string?" == toString(requireType("f")));
+    }
+    else
+    {
+        TypeId ty = requireType("f");
+        CHECK_EQ(getPrimitiveType(ty), PrimitiveType::String);
+    }
 }
 
 TEST_CASE_FIXTURE(Fixture, "infer_locals_with_nil_value_2")
@@ -92,8 +117,8 @@ TEST_CASE_FIXTURE(Fixture, "infer_locals_via_assignment_from_its_call_site")
 
     if (FFlag::DebugLuauDeferredConstraintResolution)
     {
-        CHECK("number | string" == toString(requireType("a")));
-        CHECK("(number | string) -> ()" == toString(requireType("f")));
+        CHECK("unknown" == toString(requireType("a")));
+        CHECK("(unknown) -> ()" == toString(requireType("f")));
 
         LUAU_REQUIRE_NO_ERRORS(result);
     }
@@ -103,27 +128,6 @@ TEST_CASE_FIXTURE(Fixture, "infer_locals_via_assignment_from_its_call_site")
 
         CHECK_EQ("number", toString(requireType("a")));
     }
-}
-TEST_CASE_FIXTURE(Fixture, "interesting_local_type_inference_case")
-{
-    if (!FFlag::DebugLuauDeferredConstraintResolution)
-        return;
-
-    ScopedFastFlag sff[] = {
-        {"DebugLuauDeferredConstraintResolution", true},
-    };
-
-    CheckResult result = check(R"(
-        local a
-        function f(x) a = x end
-        f({x = 5})
-        f({x = 5})
-    )");
-
-    CHECK("{ x: number }" == toString(requireType("a")));
-    CHECK("({ x: number }) -> ()" == toString(requireType("f")));
-
-    LUAU_REQUIRE_NO_ERRORS(result);
 }
 
 TEST_CASE_FIXTURE(Fixture, "infer_in_nocheck_mode")
@@ -177,8 +181,16 @@ TEST_CASE_FIXTURE(Fixture, "if_statement")
 
     LUAU_REQUIRE_NO_ERRORS(result);
 
-    CHECK_EQ(*builtinTypes->stringType, *requireType("a"));
-    CHECK_EQ(*builtinTypes->numberType, *requireType("b"));
+    if (FFlag::DebugLuauDeferredConstraintResolution)
+    {
+        CHECK("string?" == toString(requireType("a")));
+        CHECK("number?" == toString(requireType("b")));
+    }
+    else
+    {
+        CHECK_EQ(*builtinTypes->stringType, *requireType("a"));
+        CHECK_EQ(*builtinTypes->numberType, *requireType("b"));
+    }
 }
 
 TEST_CASE_FIXTURE(Fixture, "statements_are_topologically_sorted")
@@ -1261,8 +1273,6 @@ local b = typeof(foo) ~= 'nil'
 
 TEST_CASE_FIXTURE(Fixture, "occurs_isnt_always_failure")
 {
-    ScopedFastFlag sff{"LuauOccursIsntAlwaysFailure", true};
-
     CheckResult result = check(R"(
 function f(x, c)                   -- x : X
     local y = if c then x else nil -- y : X?
@@ -1441,6 +1451,32 @@ TEST_CASE_FIXTURE(Fixture, "promote_tail_type_packs")
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
+TEST_CASE_FIXTURE(BuiltinsFixture, "lti_must_record_contributing_locations")
+{
+    ScopedFastFlag sff_DebugLuauDeferredConstraintResolution{"DebugLuauDeferredConstraintResolution", true};
+
+    CheckResult result = check(R"(
+        local function f(a)
+            if math.random() > 0.5 then
+                math.abs(a)
+            else
+                string.len(a)
+            end
+        end
+    )");
+
+    // We inspect the actual errors in other tests; this test verifies that we
+    // actually recorded breadcrumbs for a.
+    LUAU_REQUIRE_ERROR_COUNT(3, result);
+    TypeId fnTy = requireType("f");
+    const FunctionType* fn = get<FunctionType>(fnTy);
+    REQUIRE(fn);
+
+    TypeId argTy = *first(fn->argTypes);
+    std::vector<std::pair<Location, TypeId>> locations = getMainModule()->upperBoundContributors[argTy];
+    CHECK(locations.size() == 2);
+}
+
 /*
  * CLI-49876
  *
@@ -1453,8 +1489,6 @@ TEST_CASE_FIXTURE(Fixture, "promote_tail_type_packs")
  */
 TEST_CASE_FIXTURE(BuiltinsFixture, "be_sure_to_use_active_txnlog_when_evaluating_a_variadic_overload")
 {
-    ScopedFastFlag sff{"LuauVariadicOverloadFix", true};
-
     CheckResult result = check(R"(
         local function concat<T>(target: {T}, ...: {T} | T): {T}
             return (nil :: any) :: {T}

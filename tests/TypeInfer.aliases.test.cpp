@@ -185,7 +185,6 @@ TEST_CASE_FIXTURE(Fixture, "mutually_recursive_aliases")
     LUAU_REQUIRE_NO_ERRORS(result);
 }
 
-#if 0
 TEST_CASE_FIXTURE(Fixture, "generic_aliases")
 {
     ScopedFastFlag sff[] = {
@@ -199,8 +198,7 @@ TEST_CASE_FIXTURE(Fixture, "generic_aliases")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    const std::string expected =
-        R"(Type 'bad' could not be converted into 'T<number>'; type bad["v"] (string) is not a subtype of T<number>["v"] (number))";
+    const std::string expected = R"(Type 'bad' could not be converted into 'T<number>'; at ["v"], string is not exactly number)";
     CHECK(result.errors[0].location == Location{{4, 31}, {4, 44}});
     CHECK_EQ(expected, toString(result.errors[0]));
 }
@@ -219,13 +217,11 @@ TEST_CASE_FIXTURE(Fixture, "dependent_generic_aliases")
     )");
 
     LUAU_REQUIRE_ERROR_COUNT(1, result);
-    const std::string expected =
-        R"(Type 'bad' could not be converted into 'U<number>'; type bad["t"]["v"] (string) is not a subtype of U<number>["t"]["v"] (number))";
+    const std::string expected = R"(Type 'bad' could not be converted into 'U<number>'; at ["t"]["v"], string is not exactly number)";
 
     CHECK(result.errors[0].location == Location{{4, 31}, {4, 52}});
     CHECK_EQ(expected, toString(result.errors[0]));
 }
-#endif
 
 TEST_CASE_FIXTURE(Fixture, "mutually_recursive_generic_aliases")
 {
@@ -1050,7 +1046,7 @@ TEST_CASE_FIXTURE(Fixture, "table_types_record_the_property_locations")
     LUAU_REQUIRE_NO_ERRORS(result);
     auto ty = requireTypeAlias("Table");
 
-    auto ttv = Luau::get<Luau::TableType>(ty);
+    auto ttv = Luau::get<Luau::TableType>(follow(ty));
     REQUIRE(ttv);
 
     auto propIt = ttv->props.find("create");

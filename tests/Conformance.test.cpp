@@ -10,7 +10,9 @@
 #include "Luau/TypeInfer.h"
 #include "Luau/BytecodeBuilder.h"
 #include "Luau/Frontend.h"
+#include "Luau/Compiler.h"
 #include "Luau/CodeGen.h"
+#include "Luau/BytecodeSummary.h"
 
 #include "doctest.h"
 #include "ScopedFlags.h"
@@ -23,8 +25,6 @@
 extern bool verbose;
 extern bool codegen;
 extern int optimizationLevel;
-
-LUAU_FASTFLAG(LuauFloorDivision);
 
 static lua_CompileOptions defaultOptions()
 {
@@ -273,6 +273,25 @@ static void* limitedRealloc(void* ud, void* ptr, size_t osize, size_t nsize)
     }
 }
 
+static std::vector<Luau::CodeGen::FunctionBytecodeSummary> analyzeFile(const char* source, const unsigned nestingLimit)
+{
+    Luau::BytecodeBuilder bcb;
+
+    Luau::CompileOptions options;
+    options.optimizationLevel = optimizationLevel;
+    options.debugLevel = 1;
+
+    compileOrThrow(bcb, source, options);
+
+    const std::string& bytecode = bcb.getBytecode();
+
+    std::unique_ptr<lua_State, void (*)(lua_State*)> globalState(luaL_newstate(), lua_close);
+    lua_State* L = globalState.get();
+
+    LUAU_ASSERT(luau_load(L, "source", bytecode.data(), bytecode.size(), 0) == 0);
+    return Luau::CodeGen::summarizeBytecode(L, -1, nestingLimit);
+}
+
 TEST_SUITE_BEGIN("Conformance");
 
 TEST_CASE("CodegenSupported")
@@ -288,13 +307,14 @@ TEST_CASE("Assert")
 
 TEST_CASE("Basic")
 {
-    ScopedFastFlag sffs{"LuauFloorDivision", true};
-
     runConformance("basic.lua");
 }
 
 TEST_CASE("Buffers")
 {
+    ScopedFastFlag luauBufferBetterMsg{"LuauBufferBetterMsg", true};
+    ScopedFastFlag luauCodeGenFixByteLower{"LuauCodeGenFixByteLower", true};
+
     runConformance("buffers.lua");
 }
 
@@ -379,7 +399,6 @@ TEST_CASE("Errors")
 
 TEST_CASE("Events")
 {
-    ScopedFastFlag sffs{"LuauFloorDivision", true};
     runConformance("events.lua");
 }
 
@@ -416,6 +435,7 @@ TEST_CASE("Bitwise")
 
 TEST_CASE("UTF8")
 {
+    ScopedFastFlag sff("LuauStricterUtf8", true);
     runConformance("utf8.lua");
 }
 
@@ -435,8 +455,6 @@ static int cxxthrow(lua_State* L)
 
 TEST_CASE("PCall")
 {
-    ScopedFastFlag sff("LuauHandlerClose", true);
-
     runConformance(
         "pcall.lua",
         [](lua_State* L) {
@@ -464,8 +482,6 @@ TEST_CASE("Pack")
 
 TEST_CASE("Vector")
 {
-    ScopedFastFlag sffs{"LuauFloorDivision", true};
-
     lua_CompileOptions copts = defaultOptions();
     copts.vectorCtor = "vector";
 
@@ -521,6 +537,10 @@ static void populateRTTI(lua_State* L, Luau::TypeId type)
 
         case Luau::PrimitiveType::Thread:
             lua_pushstring(L, "thread");
+            break;
+
+        case Luau::PrimitiveType::Buffer:
+            lua_pushstring(L, "buffer");
             break;
 
         default:
@@ -1698,9 +1718,6 @@ static void pushInt64(lua_State* L, int64_t value)
 
 TEST_CASE("Userdata")
 {
-
-    ScopedFastFlag sffs{"LuauFloorDivision", true};
-
     runConformance("userdata.lua", [](lua_State* L) {
         // create metatable with all the metamethods
         lua_newtable(L);
@@ -2112,7 +2129,6 @@ TEST_CASE("Ares forkserver")
     luaC_validate(GL);
 }
 
-
 TEST_CASE("TeleLuau memory limits")
 {
     std::string source = getConformanceTestSource("teleluau_memory.lua");
@@ -2156,7 +2172,7 @@ TEST_CASE("TeleLuau memory limits")
     if (codegen && luau_codegen_supported())
         luau_codegen_compile(L, -1);
 
-    lua_State *Lforker = eris_make_forkserver(L);
+    lua_State* Lforker = eris_make_forkserver(L);
     // Don't need the original thread on the main stack anymore
     lua_remove(GL, -2);
 
@@ -2165,7 +2181,7 @@ TEST_CASE("TeleLuau memory limits")
         // because we clean up the state at the end of each loop it's ok
         // for us to reuse memcats.
         const uint8_t memcat = 2;
-        lua_State *Lchild = eris_fork_thread(Lforker, true);
+        lua_State* Lchild = eris_fork_thread(Lforker, true);
         // 10kb memory limit
         lua_setmemcatbyteslimit(Lchild, 10000);
         // "user" memcats start from 2.
@@ -2197,6 +2213,53 @@ TEST_CASE("TeleLuau memory limits")
 
     extern void luaC_validate(lua_State * L); // internal function, declared in lgc.h - not exposed via lua.h
     luaC_validate(GL);
+}
+
+TEST_CASE("BytecodeDistributionPerFunctionTest")
+{
+    const char* source = R"(
+local function first(n, p)
+  local t = {}
+  for i=1,p do t[i] = i*10 end
+
+  local function inner(_,n)
+    if n > 0 then
+      n = n-1
+      return n, unpack(t)
+    end
+  end
+  return inner, nil, n
+end
+
+local function second(x)
+ return x[1]
+end
+)";
+
+    std::vector<Luau::CodeGen::FunctionBytecodeSummary> summaries(analyzeFile(source, 0));
+
+    CHECK_EQ(summaries[0].getName(), "inner");
+    CHECK_EQ(summaries[0].getLine(), 6);
+    CHECK_EQ(summaries[0].getCounts(0),
+        std::vector<unsigned>({1, 1, 0, 0, 1, 0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+
+    CHECK_EQ(summaries[1].getName(), "first");
+    CHECK_EQ(summaries[1].getLine(), 2);
+    CHECK_EQ(summaries[1].getCounts(0),
+        std::vector<unsigned>({1, 0, 1, 0, 2, 0, 3, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+
+    CHECK_EQ(summaries[2].getName(), "second");
+    CHECK_EQ(summaries[2].getLine(), 15);
+    CHECK_EQ(summaries[2].getCounts(0),
+        std::vector<unsigned>({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
+
+    CHECK_EQ(summaries[3].getName(), "");
+    CHECK_EQ(summaries[3].getLine(), 1);
+    CHECK_EQ(summaries[3].getCounts(0),
+        std::vector<unsigned>({0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}));
 }
 
 TEST_SUITE_END();

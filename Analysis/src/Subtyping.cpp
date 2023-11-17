@@ -47,16 +47,24 @@ struct VarianceFlipper
 
 bool SubtypingReasoning::operator==(const SubtypingReasoning& other) const
 {
-    return subPath == other.subPath && superPath == other.superPath;
+    return subPath == other.subPath && superPath == other.superPath && variance == other.variance;
+}
+
+size_t SubtypingReasoningHash::operator()(const SubtypingReasoning& r) const
+{
+    return TypePath::PathHash()(r.subPath) ^ (TypePath::PathHash()(r.superPath) << 1) ^ (static_cast<size_t>(r.variance) << 1);
 }
 
 SubtypingResult& SubtypingResult::andAlso(const SubtypingResult& other)
 {
-    // If this result is a subtype, we take the other result's reasoning. If
-    // this result is not a subtype, we keep the current reasoning, even if the
-    // other isn't a subtype.
-    if (isSubtype)
-        reasoning = other.reasoning;
+    // If the other result is not a subtype, we want to join all of its
+    // reasonings to this one. If this result already has reasonings of its own,
+    // those need to be attributed here.
+    if (!other.isSubtype)
+    {
+        for (const SubtypingReasoning& r : other.reasoning)
+            reasoning.insert(r);
+    }
 
     isSubtype &= other.isSubtype;
     // `|=` is intentional here, we want to preserve error related flags.
@@ -69,10 +77,20 @@ SubtypingResult& SubtypingResult::andAlso(const SubtypingResult& other)
 
 SubtypingResult& SubtypingResult::orElse(const SubtypingResult& other)
 {
-    // If the other result is not a subtype, we take the other result's
-    // reasoning.
-    if (!other.isSubtype)
-        reasoning = other.reasoning;
+    // If this result is a subtype, we do not join the reasoning lists. If this
+    // result is not a subtype, but the other is a subtype, we want to _clear_
+    // our reasoning list. If both results are not subtypes, we join the
+    // reasoning lists.
+    if (!isSubtype)
+    {
+        if (other.isSubtype)
+            reasoning.clear();
+        else
+        {
+            for (const SubtypingReasoning& r : other.reasoning)
+                reasoning.insert(r);
+        }
+    }
 
     isSubtype |= other.isSubtype;
     isErrorSuppressing |= other.isErrorSuppressing;
@@ -89,20 +107,26 @@ SubtypingResult& SubtypingResult::withBothComponent(TypePath::Component componen
 
 SubtypingResult& SubtypingResult::withSubComponent(TypePath::Component component)
 {
-    if (!reasoning)
-        reasoning = SubtypingReasoning{Path(), Path()};
-
-    reasoning->subPath = reasoning->subPath.push_front(component);
+    if (reasoning.empty())
+        reasoning.insert(SubtypingReasoning{Path(component), TypePath::kEmpty});
+    else
+    {
+        for (auto& r : reasoning)
+            r.subPath = r.subPath.push_front(component);
+    }
 
     return *this;
 }
 
 SubtypingResult& SubtypingResult::withSuperComponent(TypePath::Component component)
 {
-    if (!reasoning)
-        reasoning = SubtypingReasoning{Path(), Path()};
-
-    reasoning->superPath = reasoning->superPath.push_front(component);
+    if (reasoning.empty())
+        reasoning.insert(SubtypingReasoning{TypePath::kEmpty, Path(component)});
+    else
+    {
+        for (auto& r : reasoning)
+            r.superPath = r.superPath.push_front(component);
+    }
 
     return *this;
 }
@@ -114,20 +138,39 @@ SubtypingResult& SubtypingResult::withBothPath(TypePath::Path path)
 
 SubtypingResult& SubtypingResult::withSubPath(TypePath::Path path)
 {
-    if (!reasoning)
-        reasoning = SubtypingReasoning{Path(), Path()};
-
-    reasoning->subPath = path.append(reasoning->subPath);
+    if (reasoning.empty())
+        reasoning.insert(SubtypingReasoning{path, TypePath::kEmpty});
+    else
+    {
+        for (auto& r : reasoning)
+            r.subPath = path.append(r.subPath);
+    }
 
     return *this;
 }
 
 SubtypingResult& SubtypingResult::withSuperPath(TypePath::Path path)
 {
-    if (!reasoning)
-        reasoning = SubtypingReasoning{Path(), Path()};
+    if (reasoning.empty())
+        reasoning.insert(SubtypingReasoning{TypePath::kEmpty, path});
+    else
+    {
+        for (auto& r : reasoning)
+            r.superPath = path.append(r.superPath);
+    }
 
-    reasoning->superPath = path.append(reasoning->superPath);
+    return *this;
+}
+
+SubtypingResult& SubtypingResult::withVariance(SubtypingVariance variance)
+{
+    if (reasoning.empty())
+        reasoning.insert(SubtypingReasoning{TypePath::kEmpty, TypePath::kEmpty, variance});
+    else
+    {
+        for (auto& r : reasoning)
+            r.variance = variance;
+    }
 
     return *this;
 }
@@ -281,7 +324,7 @@ SubtypingResult Subtyping::isCovariantWith(SubtypingEnvironment& env, TypeId sub
         return {true};
 
     std::pair<TypeId, TypeId> typePair{subTy, superTy};
-    if (!seenTypes.insert(typePair).second)
+    if (!seenTypes.insert(typePair))
     {
         /* TODO: Caching results for recursive types is really tricky to think
          * about.
@@ -321,14 +364,26 @@ SubtypingResult Subtyping::isCovariantWith(SubtypingEnvironment& env, TypeId sub
     if (auto subUnion = get<UnionType>(subTy))
         result = isCovariantWith(env, subUnion, superTy);
     else if (auto superUnion = get<UnionType>(superTy))
+    {
         result = isCovariantWith(env, subTy, superUnion);
+        if (!result.isSubtype && !result.isErrorSuppressing && !result.normalizationTooComplex)
+        {
+            SubtypingResult semantic = isCovariantWith(env, normalizer->normalize(subTy), normalizer->normalize(superTy));
+            if (semantic.isSubtype)
+                result = semantic;
+        }
+    }
     else if (auto superIntersection = get<IntersectionType>(superTy))
         result = isCovariantWith(env, subTy, superIntersection);
     else if (auto subIntersection = get<IntersectionType>(subTy))
     {
         result = isCovariantWith(env, subIntersection, superTy);
         if (!result.isSubtype && !result.isErrorSuppressing && !result.normalizationTooComplex)
-            result = isCovariantWith(env, normalizer->normalize(subTy), normalizer->normalize(superTy));
+        {
+            SubtypingResult semantic = isCovariantWith(env, normalizer->normalize(subTy), normalizer->normalize(superTy));
+            if (semantic.isSubtype)
+                result = semantic;
+        }
     }
     else if (get<AnyType>(superTy))
         result = {true};
@@ -620,8 +675,8 @@ SubtypingResult Subtyping::isContravariantWith(SubtypingEnvironment& env, SubTy&
     // whenever we involve contravariance. We'll end up appending path
     // components that should belong to the supertype to the subtype, and vice
     // versa.
-    if (result.reasoning)
-        std::swap(result.reasoning->subPath, result.reasoning->superPath);
+    for (auto& reasoning : result.reasoning)
+        std::swap(reasoning.subPath, reasoning.superPath);
 
     return result;
 }
@@ -629,7 +684,7 @@ SubtypingResult Subtyping::isContravariantWith(SubtypingEnvironment& env, SubTy&
 template<typename SubTy, typename SuperTy>
 SubtypingResult Subtyping::isInvariantWith(SubtypingEnvironment& env, SubTy&& subTy, SuperTy&& superTy)
 {
-    return isCovariantWith(env, subTy, superTy).andAlso(isContravariantWith(env, subTy, superTy));
+    return isCovariantWith(env, subTy, superTy).andAlso(isContravariantWith(env, subTy, superTy)).withVariance(SubtypingVariance::Invariant);
 }
 
 template<typename SubTy, typename SuperTy>
@@ -647,7 +702,7 @@ SubtypingResult Subtyping::isContravariantWith(SubtypingEnvironment& env, const 
 template<typename SubTy, typename SuperTy>
 SubtypingResult Subtyping::isInvariantWith(SubtypingEnvironment& env, const TryPair<const SubTy*, const SuperTy*>& pair)
 {
-    return isCovariantWith(env, pair).andAlso(isContravariantWith(pair));
+    return isCovariantWith(env, pair).andAlso(isContravariantWith(pair)).withVariance(SubtypingVariance::Invariant);
 }
 
 /*
@@ -967,7 +1022,7 @@ SubtypingResult Subtyping::isCovariantWith(SubtypingEnvironment& env, const Meta
 
 SubtypingResult Subtyping::isCovariantWith(SubtypingEnvironment& env, const MetatableType* subMt, const TableType* superTable)
 {
-    if (auto subTable = get<TableType>(subMt->table))
+    if (auto subTable = get<TableType>(follow(subMt->table)))
     {
         // Metatables cannot erase properties from the table they're attached to, so
         // the subtyping rule for this is just if the table component is a subtype
