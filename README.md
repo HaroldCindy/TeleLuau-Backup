@@ -25,25 +25,8 @@ The changes to Luau proper are pretty minimal and mainly involve adding hooks to
 
 # Contributing
 
-<<<<<<< HEAD
 Sure! PRs are welcome, as are discussions and emails. Truth be told, I'm using this to learn Lua and VM design by
 targeting an obscure usecase, so if something seems odd to you it's probably because I don't know what I'm doing!
-=======
-`luau-analyze` is a command-line type checker and linter; given a set of input files, it produces errors/warnings according to the file configuration, which can be customized by using `--!` comments in the files or [`.luaurc`](https://rfcs.luau-lang.org/config-luaurc) files. For details please refer to [type checking]( https://luau-lang.org/typecheck) and [linting](https://luau-lang.org/lint) documentation.
-
-# Installation
-
-You can install and run Luau by downloading the compiled binaries from [a recent release](https://github.com/luau-lang/luau/releases); note that `luau` and `luau-analyze` binaries from the archives will need to be added to PATH or copied to a directory like `/usr/local/bin` on Linux/macOS.
-
-Alternatively, you can use one of the packaged distributions (note that these are not maintained by Luau development team):
-
-- macOS: [Install Homebrew](https://docs.brew.sh/Installation) and run `brew install luau`
-- Arch Linux: From the AUR (Arch Linux User Repository), install one of these packages via a AUR helper or manually (by cloning their repo and using ``makepkg``): [luau](https://aur.archlinux.org/packages/luau) (manual build), [luau-git](https://aur.archlinux.org/packages/luau-git) (manual build by cloning this repo), or [luau-bin](https://aur.archlinux.org/packages/luau-bin) (pre-built binaries from releases)
-- Alpine Linux: [Enable community repositories](https://wiki.alpinelinux.org/w/index.php?title=Enable_Community_Repository) and run `apk add luau`
-- Gentoo Linux: Luau is [officially packaged by Gentoo](https://packages.gentoo.org/packages/dev-lang/luau) and can be installed using `emerge dev-lang/luau`. You may have to unmask the package first before installing it (which can be done by including the `--autounmask=y` option in the `emerge` command).
-
-After installing, you will want to validate the installation was successful by running the test case [here](https://luau-lang.org/getting-started).
->>>>>>> upstream/master
 
 ## Building
 
