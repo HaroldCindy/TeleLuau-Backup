@@ -72,5 +72,40 @@ local unpersisted_wrapped = ares.unpersist(uperms, persisted_wrapped)
 assert(unpersisted_wrapped() == "x1")
 assert(unpersisted_wrapped() == "x2")
 
+
+local function openupval_test()
+    -- two closures that close over a mutable local to force
+    -- use of an open upvalue
+    local baz = {bar="quux"}
+    local function foo()
+        coroutine.yield(baz.bar)
+        baz = {bar="foo"}
+        coroutine.yield(baz.bar)
+    end
+
+    local function quux()
+        coroutine.yield(baz.bar)
+        baz = {bar="bazzer"}
+        coroutine.yield(baz.bar)
+    end
+    foo()
+    quux()
+end
+
+local co_open = coroutine.create(openupval_test)
+local i
+local expected = {"quux", "foo", "foo", "bazzer"}
+for i=1,4 do
+    -- round-trip the coroutine
+    co_open = ares.unpersist(uperms, ares.persist(perms, co_open))
+    -- make sure we yielded what we expected
+    assert(select(2, coroutine.resume(co_open)) == expected[i])
+end
+
+-- just exhausted the coroutine
+assert(select(2, coroutine.resume(co_open)) == nil)
+-- nothing left to yield, the coroutine is exhausted
+assert(coroutine.resume(co_open) == false)
+
 print('OK')
 return 'OK'
