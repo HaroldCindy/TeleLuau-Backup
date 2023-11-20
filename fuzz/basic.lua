@@ -5,3 +5,4 @@ local function test(t)
 end
 
 test({a = 1})
+return "foo"

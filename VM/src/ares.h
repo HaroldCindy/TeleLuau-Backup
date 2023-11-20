@@ -50,7 +50,7 @@ THE SOFTWARE.
  *
  * [-0, +0, e]
  */
-LUA_API void eris_dump(lua_State* L, std::ostream *writer, void* ud);
+LUA_API void eris_dump(lua_State* L, std::ostream *writer);
 
 /**
  * This provides an interface to Eris' unpersist functionality for reading

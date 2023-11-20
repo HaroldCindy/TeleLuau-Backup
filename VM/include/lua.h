@@ -5,6 +5,8 @@
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <istream>
+#include <ostream>
 
 #include "luaconf.h"
 
@@ -498,6 +500,22 @@ LUA_API lua_State *eris_fork_thread(lua_State *Lforker, uint8_t default_state);
 LUA_API void eris_serialize_thread(lua_State *Lforker, lua_State *L);
 LUA_API void eris_release_fork(lua_State *LFork);
 LUA_API void eris_set_compile_func(void (*compile_func)(lua_State*, int));
+LUA_API void eris_dump(lua_State* L, std::ostream *writer);
+
+/**
+ * This provides an interface to Eris' unpersist functionality for reading
+ * in an arbitrary way, using a reader.
+ *
+ * When called, the stack in 'L' must look like this:
+ * 1: perms:table
+ *
+ * 'reader' is the reader stream used to read all data
+ *
+ * The result of the operation will be pushed onto the stack.
+ *
+ * [-0, +1, e]
+ */
+LUA_API void eris_undump(lua_State* L, std::istream *reader);
 
 /*
 ** {======================================================================
