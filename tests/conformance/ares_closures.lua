@@ -88,5 +88,21 @@ assert(decRetGlobal() ~= aGlobal)
 decRetGlobal = ares.unpersist({glob=getfenv()}, ares.persist({[getfenv()]="glob"}, retGlobal))
 assert(decRetGlobal() == aGlobal)
 
+local function GenerateObjects()
+  local Table = {}
+
+  function Table:Func()
+    return { Table, self }
+  end
+
+  function uvcycle()
+    return Table:Func()
+  end
+end
+
+GenerateObjects()
+
+ares.unpersist({glob=getfenv()}, ares.persist({[getfenv()]="glob"}, uvcycle))
+
 print('OK')
 return 'OK'

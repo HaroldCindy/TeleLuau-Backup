@@ -67,16 +67,11 @@ THE SOFTWARE.
 /* Note that these are the default settings. They can be changed either from C
  * by calling ares_g|set_setting() or from Lua using ares.settings(). */
 
-/* The metatable key we use to allow customized persistence for tables and
- * userdata. */
-// TODO: This really should be based on userdata tags
-static const char *const kPersistKey = "__persist";
-
 /* Whether to persist debug information such as line numbers and upvalue and
  * local variable names. */
 static const bool kWriteDebugInformation = true;
 
-/* Generate a human readable "path" that is shown together with error messages
+/* Generate a human-readable "path" that is shown together with error messages
  * to indicate where in the object the error occurred. For example:
  * ares.persist({false, bad = setmetatable({}, {__persist = false})})
  * Will produce: main:1: attempt to persist forbidden table (root.bad)
@@ -223,7 +218,6 @@ static void (*sAresCodeGenCompile)(lua_State *, int) = nullptr;
 typedef struct PersistInfo {
   std::ostream *writer;
   void *ud;
-  const char *metafield;
   bool writeDebugInfo;
   bool persistingCFunc;
 } PersistInfo;
@@ -270,7 +264,6 @@ static const char *const kTypenames[] = {
 /* Setting names as used in ares.settings / ares_g|set_setting. Also, the
  * addresses of these static variables are used as keys in the registry of Lua
  * states to save the current values of the settings (as light userdata). */
-static const char kSettingMetafield[] = "spkey";
 static const char kSettingGeneratePath[] = "path";
 static const char kSettingWriteDebugInfo[] = "debug";
 static const char kSettingMaxComplexity[] = "maxrec";
@@ -1317,51 +1310,12 @@ p_special(Info *info, Callback literal) {                          /* ... obj */
   int allow = (lua_type(info->L, -1) == LUA_TTABLE);
   eris_checkstack(info->L, 4);
 
-  /* Check whether we should persist literally, or via the metafunction. */
-  if (lua_getmetatable(info->L, -1)) {                          /* ... obj mt */
-    lua_pushstring(info->L, info->u.pi.metafield);         /* ... obj mt pkey */
-    lua_rawget(info->L, -2);                           /* ... obj mt persist? */
-    switch (lua_type(info->L, -1)) {
-      /* No entry, act according to default. */
-      case LUA_TNIL:                                        /* ... obj mt nil */
-        lua_pop(info->L, 2);                                       /* ... obj */
-        break;
-
-      /* Boolean value, tells us whether allowed or not. */
-      case LUA_TBOOLEAN:                                   /* ... obj mt bool */
-        allow = lua_toboolean(info->L, -1);
-        lua_pop(info->L, 2);                                       /* ... obj */
-        break;
-
-      /* Function value, call it and don't persist literally. */
-      case LUA_TFUNCTION:                                  /* ... obj mt func */
-        lua_replace(info->L, -2);                             /* ... obj func */
-        lua_pushvalue(info->L, -2);                       /* ... obj func obj */
-
-        lua_call(info->L, 1, 1);                           /* ... obj func? */
-
-        if (!lua_isfunction(info->L, -1)) {                     /* ... obj :( */
-          eris_error(info, ERIS_ERR_SPER_FUNC, info->u.pi.metafield);
-        }                                                     /* ... obj func */
-
-        /* Special persistence, call this function when unpersisting. */
-        WRITE_VALUE(true, uint8_t);
-        persist(info);                                        /* ... obj func */
-        lua_pop(info->L, 1);                                       /* ... obj */
-        return;
-      default:                                               /* ... obj mt :( */
-        eris_error(info, ERIS_ERR_SPER_TYPE, info->u.pi.metafield);
-        return; /* not reached */
-    }
-  }
-
   if (allow) {
+                                                                   /* ... obj */
+    // TODO: we don't really need this for tables anymore, we don't allow __persist hooks.
     /* Not special but literally persisted object. */
     WRITE_VALUE(false, uint8_t);
-    literal(info);                                                 /* ... obj */
-  }
-  else if (lua_type(info->L, -1) == LUA_TTABLE) {
-    eris_error(info, ERIS_ERR_SPER_PROT);
+    literal(info);
   }
   else if (lua_userdatatag(info->L, -1) == UTAG_PROXY) {
     // Luau's userdata proxies are allowed because they're
@@ -2731,7 +2685,6 @@ unchecked_persist(lua_State *L, std::ostream *writer) {
   info.generatePath = kGeneratePath;
   info.persisting = true;
   info.u.pi.writer = writer;
-  info.u.pi.metafield = kPersistKey;
   info.u.pi.writeDebugInfo = kWriteDebugInformation;
   info.u.pi.persistingCFunc = false;
 
@@ -2745,10 +2698,6 @@ unchecked_persist(lua_State *L, std::ostream *writer) {
   if (get_setting(L, (void*)&kSettingGeneratePath)) {
                                                   /* perms buff rootobj value */
     info.generatePath = lua_toboolean(L, -1);
-    lua_pop(L, 1);                                      /* perms buff rootobj */
-  }
-  if (get_setting(L, (void*)&kSettingMetafield)) {/* perms buff rootobj value */
-    info.u.pi.metafield = lua_tostring(L, -1);
     lua_pop(L, 1);                                      /* perms buff rootobj */
   }
   if (get_setting(L, (void*)&kSettingWriteDebugInfo)) {
@@ -2923,12 +2872,7 @@ l_settings(lua_State *L) {                                /* name value? ...? */
   if (lua_isnone(L, 2)) {                                        /* name ...? */
     lua_settop(L, 1);                                                 /* name */
     /* Get the current setting value and return it. */
-    if (IS(kSettingMetafield)) {
-      if (!get_setting(L, (void*)&kSettingMetafield)) {
-        lua_pushstring(L, kPersistKey);
-      }
-    }
-    else if (IS(kSettingWriteDebugInfo)) {
+    if (IS(kSettingWriteDebugInfo)) {
       if (!get_setting(L, (void*)&kSettingWriteDebugInfo)) {
         lua_pushboolean(L, kWriteDebugInformation);
       }
@@ -2952,11 +2896,7 @@ l_settings(lua_State *L) {                                /* name value? ...? */
   else {                                                   /* name value ...? */
     lua_settop(L, 2);                                           /* name value */
     /* Set a new value for the setting. */
-    if (IS(kSettingMetafield)) {
-      luaL_optstring(L, 2, nullptr);
-      set_setting(L, (void*)&kSettingMetafield);
-    }
-    else if (IS(kSettingWriteDebugInfo)) {
+    if (IS(kSettingWriteDebugInfo)) {
       luaL_opt(L, checkboolean, 2, false);
       set_setting(L, (void*)&kSettingWriteDebugInfo);
     }
@@ -3116,7 +3056,6 @@ eris_make_forkserver(lua_State *L) {
   lua_newtable(Lforker);                                    /* LForker: state */
 
   // Collect all protos reachable from the main func (should be all of them)
-  // TODO: Verify that tables don't have untrusted __persist hooks on them!
   std::vector<Proto *> protos;
   gatherfunctions(protos, clvalue(luaA_toobject(L, -1))->l.p);
 
