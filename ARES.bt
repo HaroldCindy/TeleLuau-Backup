@@ -113,7 +113,6 @@ struct Buffer;
 struct Proto;
 struct UpVal;
 struct PermKey;
-struct LiteralTable;
 struct Upvaldesc;
 struct LocVar;
 struct CallInfo;
@@ -135,21 +134,6 @@ typedef struct {
      * fields in the following definitions. We write each value in the native
      * "size" and check for truncation when reading, if necessary. */
 } Header <bgcolor=cLtRed>;
-
-// Pre-check for if either a userdata or table needs special parsing
-uint8_t ParseSpecial() {
-    // This value must be reconstructed by executing a closure, and
-    // isn't actually present in literal form.
-    uint8_t isSpecial;
-    if (isSpecial) {
-        // should be a zero-arg closure that, when executed, will return
-        // a deserialized version of the object. This should be the retval
-        // from the __persist function that may be present on a metatable.
-        Object special_unpacker;
-        return TRUE;
-    }
-    return FALSE;
-}
 
 string ReadObject(Object &o) {
     // ref should be non-zero if present
@@ -200,15 +184,11 @@ typedef struct {
         case ET_STRING:
             String val; break;
         case ET_TABLE:
-            if (!ParseSpecial())
-                Table val;
-            break;
+            Table val; break;
         case ET_FUNCTION:
             Closure val; break;
         case ET_USERDATA:
-            if (!ParseSpecial())
-                Userdata val;
-            break;
+            Userdata val; break;
         case ET_THREAD:
             Thread val; break;
         case ET_BUFFER:

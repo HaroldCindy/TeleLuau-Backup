@@ -1010,8 +1010,7 @@ u_metatable(Info *info) {                                          /* ... tbl */
 
 /** ======================================================================== */
 
-static void
-p_literaltable(Info *info) {                                       /* ... tbl */
+static void p_table(Info *info) {                                       /* ... tbl */
   eris_checkstack(info->L, 3);
 
   // write the original array and hash sizes so that we can ensure consistent
@@ -1090,8 +1089,7 @@ p_literaltable(Info *info) {                                       /* ... tbl */
   p_metatable(info);
 }
 
-static void
-u_literaltable(Info *info) {                                           /* ... */
+static void u_table(Info *info) {                                           /* ... */
   eris_checkstack(info->L, 4);
 
   lua_newtable(info->L);                                           /* ... tbl */
@@ -1276,8 +1274,7 @@ u_literaltable(Info *info) {                                           /* ... */
 
 /** ======================================================================== */
 
-static void
-p_literaluserdata(Info *info) {                                  /* ... udata */
+static void p_userdata(Info *info) {                                  /* ... udata */
   uint8_t utag = lua_userdatatag(info->L, -1);
   eris_assert(utag == UTAG_PROXY);
   const size_t size = lua_objlen(info->L, -1);
@@ -1288,8 +1285,7 @@ p_literaluserdata(Info *info) {                                  /* ... udata */
   p_metatable(info);                                             /* ... udata */
 }
 
-static void
-u_literaluserdata(Info *info) {                                        /* ... */
+static void u_userdata(Info *info) {                                        /* ... */
   eris_checkstack(info->L, 1);
   {
     uint8_t utag = READ_VALUE(uint8_t);
@@ -1299,72 +1295,6 @@ u_literaluserdata(Info *info) {                                        /* ... */
   }
   registerobject(info);
   u_metatable(info);
-}
-
-/** ======================================================================== */
-
-typedef void (*Callback) (Info*);
-
-static void
-p_special(Info *info, Callback literal) {                          /* ... obj */
-  int allow = (lua_type(info->L, -1) == LUA_TTABLE);
-  eris_checkstack(info->L, 4);
-
-  if (allow) {
-                                                                   /* ... obj */
-    // TODO: we don't really need this for tables anymore, we don't allow __persist hooks.
-    /* Not special but literally persisted object. */
-    WRITE_VALUE(false, uint8_t);
-    literal(info);
-  }
-  else if (lua_userdatatag(info->L, -1) == UTAG_PROXY) {
-    // Luau's userdata proxies are allowed because they're
-    // literally just containers for metatables
-    WRITE_VALUE(false, uint8_t);
-    literal(info);                                                 /* ... obj */
-  }
-  else {
-    eris_error(info, ERIS_ERR_USERDATA);
-  }
-}
-
-static void
-u_special(Info *info, int type, Callback literal) {                    /* ... */
-  eris_checkstack(info->L, 2);
-  // TODO: remove this "special" stuff, it was only needed when we wanted
-  //  user-specified serialization and deserialization functions. We definitely
-  //  do not want that!
-  READ_VALUE(uint8_t);
-
-  literal(info);                                                   /* ... obj */
-}
-
-/** ======================================================================== */
-
-static void
-p_table(Info *info) {                                              /* ... tbl */
-  p_special(info, p_literaltable);                                 /* ... tbl */
-}
-
-static void
-u_table(Info *info) {                                                  /* ... */
-  u_special(info, LUA_TTABLE, u_literaltable);                     /* ... tbl */
-
-  eris_assert(lua_type(info->L, -1) == LUA_TTABLE);
-}
-
-/** ======================================================================== */
-
-static void
-p_userdata(Info *info) {                            /* perms reftbl ... udata */
-  p_special(info, p_literaluserdata);
-}
-
-static void
-u_userdata(Info *info) {                                               /* ... */
-  u_special(info, LUA_TUSERDATA, u_literaluserdata);             /* ... udata */
-
-  eris_assert(lua_type(info->L, -1) == LUA_TUSERDATA);
 }
 
 /*
