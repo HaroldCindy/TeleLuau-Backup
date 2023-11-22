@@ -1331,36 +1331,12 @@ p_special(Info *info, Callback literal) {                          /* ... obj */
 static void
 u_special(Info *info, int type, Callback literal) {                    /* ... */
   eris_checkstack(info->L, 2);
-  if (READ_VALUE(uint8_t)) {
-    int reference;
-    /* Reserve entry in the reftable before unpersisting the function to keep
-     * the reference order intact. We can set this to nil at first, because
-     * there's no way the special function would access this. */
-    lua_pushnil(info->L);                                          /* ... nil */
-    reference = registerobject(info);
-    lua_pop(info->L, 1);                                               /* ... */
-    /* Increment reference counter by one to compensate for the increment when
-     * persisting a special object. */
-    unpersist(info);                                           /* ... spfunc? */
-    if (!lua_isfunction(info->L, -1)) {                             /* ... :( */
-      eris_error(info, ERIS_ERR_SPER_UFUNC);
-    }                                                           /* ... spfunc */
+  // TODO: remove this "special" stuff, it was only needed when we wanted
+  //  user-specified serialization and deserialization functions. We definitely
+  //  do not want that!
+  READ_VALUE(uint8_t);
 
-    lua_call(info->L, 0, 1);                                    /* ... obj? */
-
-    if (lua_type(info->L, -1) != type) {                            /* ... :( */
-      const char *want = kTypenames[type];
-      const char *have = kTypenames[lua_type(info->L, -1)];
-      eris_error(info, ERIS_ERR_SPER_LOAD, want, have);
-    }                                                              /* ... obj */
-
-    /* Update the reftable entry. */
-    lua_pushvalue(info->L, -1);                                /* ... obj obj */
-    lua_rawseti(info->L, 2, reference);                            /* ... obj */
-  }
-  else {
-    literal(info);                                                 /* ... obj */
-  }
+  literal(info);                                                   /* ... obj */
 }
 
 /** ======================================================================== */
