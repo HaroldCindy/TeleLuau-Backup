@@ -235,8 +235,9 @@ struct Table {
     for (i=0; i<(array_size+node_size); ++i) {
         /* key/value pairs */
         struct Pair {
-            Object key;         /* never nil, since that indicates the end */
-            Object value;       /* never nil, since the entry wouldn't exist then */
+            /* Both of these may legally be `nil` due to hole preservation */
+            Object key;
+            Object value;
         } p <read=Str("%s : %s", ReadObject(this.key), ReadObject(this.value))>;
     }
 
