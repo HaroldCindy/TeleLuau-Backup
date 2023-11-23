@@ -2215,6 +2215,53 @@ TEST_CASE("TeleLuau memory limits")
     luaC_validate(GL);
 }
 
+// janky hack to get data out of the persist test and into the unpersist test
+static thread_local std::string _serializedEris = "";
+
+TEST_CASE("Eris Conformance Tests")
+{
+    std::string serializedOutput;
+    runConformance(
+        "eris_persist.lua",
+        // setup
+        [](lua_State *L) {
+            lua_pushcfunction(
+                L,
+                [](lua_State* L) {
+                    lua_pushlightuserdata(L, (void *)(321));
+                    return 1;
+                },
+                "createludata");
+            lua_setglobal(L, "createludata");
+        },
+        // yield handler
+        [](lua_State *L) {
+            CHECK((lua_gettop(L) == 1));
+            _serializedEris = std::string(lua_tostring(L, -1), lua_strlen(L, -1));
+        }
+    );
+
+    runConformance(
+        "eris_unpersist.lua",
+        // setup
+        [](lua_State *L) {
+            lua_pushlstring(L, _serializedEris.c_str(), _serializedEris.length());
+            lua_setglobal(L, "buf");
+
+            lua_pushcfunction(
+                L,
+                [](lua_State *L)
+                {
+                    lua_pushboolean(L, lua_touserdata(L, -1) == (void*)321);
+                    return 1;
+                },
+                "checkludata"
+            );
+            lua_setglobal(L, "checkludata");
+        }
+    );
+}
+
 TEST_CASE("BytecodeDistributionPerFunctionTest")
 {
     const char* source = R"(

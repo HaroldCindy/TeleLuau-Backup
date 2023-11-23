@@ -11,4 +11,5 @@
 /luau-tests
 /luau-analyze
 /luau-compile
+/luau-bytecode
 __pycache__
