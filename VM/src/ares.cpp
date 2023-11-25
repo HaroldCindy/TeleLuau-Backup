@@ -869,13 +869,16 @@ u_boolean(Info *info) {                                                /* ... */
 
 static void
 p_pointer(Info *info) {                                         /* ... ludata */
+  WRITE_VALUE((uint8_t)lua_lightuserdatatag(info->L, -1), uint8_t);
   WRITE_VALUE((size_t)lua_touserdata(info->L, -1), size_t);
 }
 
 static void
 u_pointer(Info *info) {                                                /* ... */
   eris_checkstack(info->L, 1);
-  lua_pushlightuserdata(info->L, (void*)READ_VALUE(size_t));    /* ... ludata */
+  uint8_t tag = READ_VALUE(uint8_t);
+  void *ptr = (void*)READ_VALUE(size_t);
+  lua_pushlightuserdatatagged(info->L, ptr, tag);    /* ... ludata */
 
   eris_assert(lua_type(info->L, -1) == LUA_TLIGHTUSERDATA);
 }

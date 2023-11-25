@@ -681,7 +681,10 @@ void lua_pushboolean(lua_State* L, int b)
 
 void lua_pushlightuserdatatagged(lua_State* L, void* p, int tag)
 {
-    api_check(L, unsigned(tag) < LUA_LUTAG_LIMIT);
+    // Ares: We actually need to set these even though they technically
+    // violate the API constraints. We need to be able to re-push
+    // internal iterators used by Luau itself.
+    // api_check(L, unsigned(tag) < LUA_LUTAG_LIMIT);
     setpvalue(L->top, p, tag);
     api_incr_top(L);
 }

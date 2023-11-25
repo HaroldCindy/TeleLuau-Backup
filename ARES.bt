@@ -108,6 +108,7 @@ struct String;
 struct Table;
 struct Closure;
 struct Userdata;
+struct LightUserdata;
 struct Thread;
 struct Buffer;
 struct Proto;
@@ -178,7 +179,7 @@ typedef struct {
         case ET_BOOLEAN:
             int32_t val; break;
         case ET_LIGHTUSERDATA:
-            size_t val; break;
+            LightUserdata val; break;
         case ET_NUMBER:
             Number val; break;
         case ET_STRING:
@@ -251,6 +252,11 @@ struct Userdata {
     uchar data[length]; /* The actual data */
     Object metatable;   /* The metatable (nil for none, otherwise LUA_TTABLE) */
 };
+
+struct LightUserdata {
+    uint8_t lutag;       /* Userdata tag */
+    size_t ptr;
+} <Read=Str("%c : %Lu", this.lutag, this.ptr)>;
 
 struct Closure {
     uint8_t isCClosure; /* 1 if the closure is a C closure; 0 otherwise */
