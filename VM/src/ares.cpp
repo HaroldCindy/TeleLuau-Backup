@@ -684,7 +684,6 @@ write_Instruction(Info *info, Instruction value) {
 
 /** ======================================================================== */
 
-// TODO: clean up this nonsense to require fewer individual stream reads
 static uint8_t
 read_uint8_t(Info *info) {
   uint8_t value;
@@ -972,7 +971,6 @@ static void
 u_buffer(Info *info) {                                                /* ... */
   eris_checkstack(info->L, 2);
   {
-    /* TODO Can we avoid this copy somehow? (Without it getting too nasty) */
     const size_t length = READ_VALUE(size_t);
     char *buf_data = (char *)lua_newbuffer(info->L, length);      /* ... buf */
     READ_RAW(buf_data, length);
@@ -1114,7 +1112,6 @@ static void u_table(Info *info) {                                           /* .
 
   /* Maintain a vector of keys in the order they were parsed so any existing
    * iterators won't be invalidated */
-  // TODO: use lua vectors
   std::vector<std::pair<TValue, TValue>> ordered_keys;
 
   /* Unpersist all key / value pairs. */
@@ -1454,10 +1451,8 @@ u_proto(Info *info) {                                            /* ... proto */
   /* Read byte code. */
   SAFE_ALLOC_VECTOR(info->L, p->code, 0, int, p->sizecode, Instruction);
   READ(p->code, p->sizecode, Instruction);
-  /* entrycode should only differ for JITted protos, and we don't deal in those. */
-  /* TODO: Luau becomes very unhappy if it tries to call a proto natively but
-   *  finds that it doesn't actually have any native code. Use some heuristic
-   *  to determine when we need to call the codegen after importing a proto. */
+  /* codeentry should only differ for JITted protos, and we don't deal in those.
+   * If it matters, this'll be fixed up by the call to the codegen later. */
   p->codeentry = p->code;
 
   /* Read constants. */
@@ -2557,7 +2552,7 @@ static void store_cfunc_perms(lua_State *L) {
                                               /* ... perms new_perms k_cl v */
       if (cl->isC) {
         lua_pushvalue(L, -3);          /* ... perms new_perms k v new_perms */
-        // TODO: technically this should be keyed on the
+        // NB: technically this should be keyed on the
         //  function + continuation function pair. I suppose it's technically
         //  possible for multiple closures to be defined with the same
         //  function pointer, but distinct continuation pointers, although I
@@ -2924,7 +2919,6 @@ eris_set_setting(lua_State *L, const char *name, int value) {          /* ... */
 ** TeleLuau serialization functions.
 ** ============================================================================
 */
-// TODO: split into its own file, has nothing to do with Ares.
 
 static void gatherfunctions(std::vector<Proto*>& results, Proto* proto) {
   if (results.size() <= size_t(proto->bytecodeid))
