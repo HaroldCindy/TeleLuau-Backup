@@ -294,6 +294,13 @@ static const lua_Number kHeaderNumber = (lua_Number)-1.234567890;
 // Stack indices for forkserver threads
 #define FS_STATE_IDX 1
 
+// Internal lightuserdata tags for Ares. These are
+// intentionally above the regular lightuserdata limit
+// since they're an internal detail for deserialization state.
+#define LUTAG_ARES_START 150
+#define LUTAG_ARES_BOXED_NIL (LUTAG_ARES_START)
+#define LUTAG_ARES_UPREF (LUTAG_ARES_START + 1)
+
 /* }======================================================================== */
 
 /*
@@ -373,8 +380,7 @@ static void *eris_getupvalueid_safe(Info *info, int funcindex, int n) {
     // iterators also push a `size_t` in `lightuserdata` for the current
     // iter index, so we want to make sure those would never match an
     // upvalue `lightuserdata` key.
-    size_t tag_byte = size_t(0xF) << ((sizeof(void*) - size_t(1)) * 8);
-    uv_id = (void*)(eris_savestackidx(info->L, (StkId)uv_id) | tag_byte);
+    uv_id = (void*)(eris_savestackidx(info->L, (StkId)uv_id));
   }
   return uv_id;
 }
@@ -1583,6 +1589,11 @@ u_upval(Info *info) {                                                  /* ... */
   lua_createtable(info->L, 5, 0);                                  /* ... tbl */
   registerobject(info);
   unpersist(info);                                             /* ... tbl obj */
+  // We can't put a literal nil in the table or it'll mess up objlen. Box it.
+  if (lua_isnil(info->L, -1)) {
+    lua_pushlightuserdatatagged(info->L, nullptr, LUTAG_ARES_BOXED_NIL);
+    lua_replace(info->L, -2);
+  }
   lua_rawseti(info->L, -2, UVTVAL);                                /* ... tbl */
 
   eris_assert(lua_type(info->L, -1) == LUA_TTABLE);
@@ -1692,7 +1703,11 @@ p_closure(Info *info) {                              /* perms reftbl ... func */
       pushpath(info, "[%d]", nup);
 
       // strictly used as a key for finding shared upvalue references!
-      lua_pushlightuserdata(info->L, eris_getupvalueid_safe(info, -2, nup));
+      lua_pushlightuserdatatagged(
+          info->L,
+          eris_getupvalueid_safe(info, -2, nup),
+          LUTAG_ARES_UPREF
+      );
                                        /* perms reftbl ... lcl uv_val uv_id */
 
       persist_keyed(info, LUA_TUPVAL);       /* perms reftbl ... lcl uv_val */
@@ -1860,6 +1875,13 @@ u_closure(Info *info) {                                                /* ... */
          * even if we re-used one - if we had a cycle, it might have been
          * incorrectly initialized to nil before (or rather, not yet set). */
         lua_rawgeti(info->L, -1, UVTVAL);                  /* ... lcl tbl obj */
+        /* Check if this was a boxed nil, and replace it with real nil if so */
+        if (lua_type(info->L, -1) == LUA_TLIGHTUSERDATA) {
+          if (lua_lightuserdatatag(info->L, -1) == LUTAG_ARES_BOXED_NIL) {
+            lua_pushnil(info->L);
+            lua_replace(info->L, -2);
+          }
+        }
         eris_setobj(info->L, &uv->u.value, info->L->top - 1);
         lua_pop(info->L, 1);                                   /* ... lcl tbl */
 
