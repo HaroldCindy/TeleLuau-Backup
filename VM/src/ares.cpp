@@ -376,11 +376,7 @@ static void *eris_getupvalueid_safe(Info *info, int funcindex, int n) {
   // Sniff out addresses within our stack, and key them off of a
   // stack-relative address instead.
   if (uv_id >= info->L->stack && uv_id < info->L->top) {
-    // Tag the upper byte so we know it's not a real pointer. Luau's
-    // iterators also push a `size_t` in `lightuserdata` for the current
-    // iter index, so we want to make sure those would never match an
-    // upvalue `lightuserdata` key.
-    uv_id = (void*)(eris_savestackidx(info->L, (StkId)uv_id));
+    return (void*)(eris_savestackidx(info->L, (StkId)uv_id));
   }
   return uv_id;
 }
