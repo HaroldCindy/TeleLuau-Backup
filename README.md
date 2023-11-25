@@ -1,4 +1,4 @@
-# TeleLuau
+# TeleLuau ![CI](https://github.com/HaroldCindy/Teleluau/actions/workflows/build.yml/badge.svg?branch=teleluau) [![codecov](https://codecov.io/gh/HaroldCindy/Teleluau/branch/teleluau/graph/badge.svg)](https://codecov.io/gh/HaroldCindy/Teleluau)
 
 A fork of [Luau](https://github.com/Roblox/luau/) exploring serializable micro-VMs for
 [mobile agent](https://en.wikipedia.org/wiki/Mobile_agent) entities in virtual worlds.
