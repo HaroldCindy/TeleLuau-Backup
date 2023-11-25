@@ -114,7 +114,7 @@ static const lua_Unsigned kMaxComplexity = 10000;
 /* lgc.h */
 #define eris_barrierproto luaC_barrierproto
 /* lmem.h */
-#define eris_reallocvector(L, b, on, n, e) luaM_reallocarray(L, b, on, n, e, L->activememcat)
+#define eris_reallocvector(L, b, on, n, e) luaM_reallocarray((L), (b), (on), (n), e, (L)->activememcat)
 /* lobject.h */
 #define eris_ttypenv(o) ((o)->tt)
 #define eris_clLvalue clLvalue
@@ -545,6 +545,15 @@ checkboolean(lua_State *L, int narg) {                       /* ... bool? ... */
 /* Reads a typed array with the specified length. */
 #define READ(value, length, type) { \
     int _i; for (_i = 0; _i < (length); ++_i) (value)[_i] = READ_VALUE(type); }
+
+/* For safely reallocing a vector, only setting the size field after
+ * the realloc succeeds. This prevents insanity if the alloc raises and the
+ * destructor for the container triggers. */
+#define SAFE_ALLOC_VECTOR(L, b, on, size_type, size_field, e) do { \
+size_type _size_val = READ_VALUE(size_type); \
+eris_reallocvector((L), (b), (on), _size_val, e); \
+size_field = _size_val; \
+} while (0)
 
 /** ======================================================================== */
 
@@ -1443,8 +1452,7 @@ u_proto(Info *info) {                                            /* ... proto */
   p->is_vararg = READ_VALUE(uint8_t);
 
   /* Read byte code. */
-  p->sizecode = READ_VALUE(int);
-  eris_reallocvector(info->L, p->code, 0, p->sizecode, Instruction);
+  SAFE_ALLOC_VECTOR(info->L, p->code, 0, int, p->sizecode, Instruction);
   READ(p->code, p->sizecode, Instruction);
   /* entrycode should only differ for JITted protos, and we don't deal in those. */
   /* TODO: Luau becomes very unhappy if it tries to call a proto natively but
@@ -1453,8 +1461,7 @@ u_proto(Info *info) {                                            /* ... proto */
   p->codeentry = p->code;
 
   /* Read constants. */
-  p->sizek = READ_VALUE(int);
-  eris_reallocvector(info->L, p->k, 0, p->sizek, TValue);
+  SAFE_ALLOC_VECTOR(info->L, p->k, 0, int, p->sizek, TValue);
   /* Set all values to nil to avoid confusing the GC. */
   for (i = 0, n = p->sizek; i < n; ++i) {
     eris_setnilvalue(&p->k[i]);
@@ -1473,8 +1480,7 @@ u_proto(Info *info) {                                            /* ... proto */
   poppath(info);
 
   /* Read child protos. */
-  p->sizep = READ_VALUE(int);
-  eris_reallocvector(info->L, p->p, 0, p->sizep, Proto*);
+  SAFE_ALLOC_VECTOR(info->L, p->p, 0, int, p->sizep, Proto*);
   /* Null all entries to avoid confusing the GC. */
   memset(p->p, 0, p->sizep * sizeof(Proto*));
   pushpath(info, ".protos");
