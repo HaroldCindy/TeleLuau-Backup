@@ -84,12 +84,12 @@ typedef struct {
         case LBC_CONSTANT_TABLE:
         {
             struct ConstTable {
+                VarInt shape_length;
                 // keys are constant pool indices
                 VarInt keys[ReadVarInt(shape_length)];
                 // all vals initialized to 0.0 by VM
             } value <optimize=false>;
             break;
-            
         }
 
         case LBC_CONSTANT_CLOSURE:
