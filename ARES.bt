@@ -256,7 +256,7 @@ struct Userdata {
 struct LightUserdata {
     uint8_t lutag;       /* Userdata tag */
     size_t ptr;
-} <Read=Str("%c : %Lu", this.lutag, this.ptr)>;
+} <read=Str("%c : %Lu", this.lutag, this.ptr)>;
 
 struct Closure {
     uint8_t isCClosure; /* 1 if the closure is a C closure; 0 otherwise */
