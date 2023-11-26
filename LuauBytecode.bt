@@ -1,0 +1,155 @@
+//------------------------------------------------
+//--- 010 Editor v13.0.1 Binary Template
+//
+//      File: LuauBytecode.bt
+//   Authors: Harold Cindy
+//   Version: 
+//   Purpose: dissecting serialized Luau Bytecode
+//  Category: 
+// File Mask: *.luaubyte
+//  ID Bytes: 
+//   History: 
+//------------------------------------------------
+
+struct VarInt;
+
+uint64 ReadVarInt(VarInt &val) {
+    local uint64 int_val = 0;
+    local int i = 0;
+    while (val.bytes[i] > 127) {
+        int_val <<= 7;
+        int_val |= (val.bytes[i] & 127);
+        ++i;
+    }
+    int_val <<= 7;
+    int_val |= (val.bytes[i] & 127);
+    return int_val;
+}
+
+typedef struct {
+    local uint64 i = 0;
+    while(ReadUByte(FTell() + i) > 127) {
+        ++i;
+    }
+    uchar bytes[++i];
+} VarInt <read=Str("%Lu", ReadVarInt(this)), optimize=false>;
+
+typedef struct {
+    VarInt str_len;
+    char val[ReadVarInt(str_len)]  <optimize=false, bgcolor=cLtYellow>;
+} SerializedString <read=this.val, optimize=false, bgcolor=cLtAqua>;
+
+typedef enum <uchar> {
+    LBC_CONSTANT_NIL = 0,
+    LBC_CONSTANT_BOOLEAN,
+    LBC_CONSTANT_NUMBER,
+    LBC_CONSTANT_STRING,
+    LBC_CONSTANT_IMPORT,
+    LBC_CONSTANT_TABLE,
+    LBC_CONSTANT_CLOSURE,
+    LBC_CONSTANT_VECTOR,
+} ConstantType;
+
+typedef struct {
+    ConstantType type;
+    switch (type) {
+        case LBC_CONSTANT_NIL:
+            break;
+
+        case LBC_CONSTANT_BOOLEAN:
+            uchar value;
+            break;
+
+        case LBC_CONSTANT_NUMBER:
+            double value;
+            break;
+
+        case LBC_CONSTANT_VECTOR:
+            struct VectorVal {
+                float x, y, z, s;
+            } value <read=Str(this.x, this.y, this.z, this.s)>;
+            break;
+
+        case LBC_CONSTANT_STRING:
+            // Index into string table;
+            VarInt value;
+            break;
+
+        case LBC_CONSTANT_IMPORT:
+            // TODO: This is a bitfield that describes the constants
+            //  needed to find the builtin. Support unpacking it.
+            uint32 value;
+            break;
+
+        case LBC_CONSTANT_TABLE:
+        {
+            struct ConstTable {
+                // keys are constant pool indices
+                VarInt keys[ReadVarInt(shape_length)];
+                // all vals initialized to 0.0 by VM
+            } value <optimize=false>;
+            break;
+            
+        }
+
+        case LBC_CONSTANT_CLOSURE:
+            // bytecode ID for the proto
+            VarInt value;
+            break;
+
+        default:
+            Assert(0);
+    }
+} BytecodeConstant <optimize=false, read=EnumToString(this.type), bgcolor=cLtRed>;
+
+typedef struct {
+    uchar maxstacksize;
+    uchar numparams;
+    uchar numupvalues;
+    uchar isvararg;
+    uchar flags;
+    
+    VarInt typeinfo_size;
+    uchar typeinfo[ReadVarInt(typeinfo_size)] <bgcolor=cLtPurple>;
+    
+    VarInt insns_size;
+    uint32 insns[ReadVarInt(insns_size)] <bgcolor=cLtBlue>;
+    
+    VarInt constants_size;
+    BytecodeConstant constants[ReadVarInt(constants_size)];
+    
+    VarInt protos_size;
+    VarInt protos[ReadVarInt(protos_size)];
+    
+    // the line that the function starts on
+    VarInt linedefined;
+    // string table index for name (1-indexed, 0 for none)
+    VarInt debugname;
+    
+    local uint64 sizecode = ReadVarInt(insns_size);
+    
+    uchar has_lines;
+    if (has_lines) {
+        uchar linegaplog2;
+        
+        local int intervals = ((sizecode - 1) >> linegaplog2) + 1;
+        local int absoffset = (sizecode + 3) & ~3;
+        local uint64 sizelineinfo = absoffset + intervals * 4;
+        
+        uchar lineinfo[sizecode];
+        int32 abslineinfo[intervals];
+    }
+    
+    uchar has_debug;
+    if (has_debug) {
+        // TODO: actually support this
+    }
+} Proto <optimize=false, bgcolor=cLtGreen>;
+
+uchar version;
+uchar typesversion;
+VarInt num_strs;
+SerializedString strs[ReadVarInt(num_strs)];
+VarInt num_protos;
+Proto protos[ReadVarInt(num_protos)];
+VarInt mainid;

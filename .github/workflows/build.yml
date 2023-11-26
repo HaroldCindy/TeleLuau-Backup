@@ -9,12 +9,14 @@ on:
       - 'papers/**'
       - 'rfcs/**'
       - '*.md'
+      - '*.bt'
   pull_request:
     paths-ignore:
       - 'docs/**'
       - 'papers/**'
       - 'rfcs/**'
       - '*.md'
+      - '*.bt'
 
 jobs:
   unix:
