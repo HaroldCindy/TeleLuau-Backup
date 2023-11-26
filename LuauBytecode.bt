@@ -76,9 +76,14 @@ typedef struct {
             break;
 
         case LBC_CONSTANT_IMPORT:
-            // TODO: This is a bitfield that describes the constants
-            //  needed to find the builtin. Support unpacking it.
-            uint32 value;
+            // This is a bitfield that describes the string constants
+            //  needed to reference the builtin.
+            struct ImportID {
+                uint32 id0: 10;
+                uint32 id1: 10;
+                uint32 id2: 10;
+                uint32 count: 2;
+            } value;
             break;
 
         case LBC_CONSTANT_TABLE:
