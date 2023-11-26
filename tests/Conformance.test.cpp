@@ -2062,6 +2062,7 @@ TEST_CASE("Ares")
     runConformance("ares_closures.lua");
     runConformance("ares_coros.lua");
     runConformance("ares_iterators.lua");
+    runConformance("ares_errors.lua");
 }
 
 static std::string getConformanceTestSource(const std::string &name) {
