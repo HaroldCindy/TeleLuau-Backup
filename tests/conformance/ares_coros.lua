@@ -107,5 +107,42 @@ assert(select(2, coroutine.resume(co_open)) == nil)
 -- nothing left to yield, the coroutine is exhausted
 assert(coroutine.resume(co_open) == false)
 
+function coro_with_upval_captures()
+    local one = {}
+    local two = {}
+    local function foz()
+        local function bar()
+            local three = {}
+            one.two = two
+            two.three = three
+            three.one = one
+            three.two = two
+            local function foo()
+                coroutine.yield()
+                return {one, two, three}
+            end
+            local function quux()
+                return {one, two, three}
+            end
+
+            return foo(), quux()
+        end
+        return bar()
+    end
+    return foz
+end
+
+local success, tabs, rtabs
+
+co_open = coroutine.create(coro_with_upval_captures())
+coroutine.resume(co_open)
+
+success, tabs, rtabs = coroutine.resume(ares.unpersist(uperms, ares.persist(perms, co_open)))
+assert(tabs[1] == rtabs[1])
+assert(tabs[2] == rtabs[2])
+assert(tabs[3] == rtabs[3])
+assert(tabs[3].one == rtabs[3].one)
+assert(tabs[2].three == rtabs[2].three)
+
 print('OK')
 return 'OK'
