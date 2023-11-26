@@ -67,7 +67,7 @@ typedef struct {
         case LBC_CONSTANT_VECTOR:
             struct VectorVal {
                 float x, y, z, s;
-            } value <read=Str(this.x, this.y, this.z, this.s)>;
+            } value <read=Str("<%f, %f, %f, %f>", this.x, this.y, this.z, this.s)>;
             break;
 
         case LBC_CONSTANT_STRING:
