@@ -550,6 +550,9 @@ OpArgSemantics GetOpCodeArgSemantics(LuauOpCode opcode) {
         case LOP_LOADK:
         case LOP_LOADKX:
             return LARG_AD;
+        case LOP_COVERAGE:
+            // emitted as ABC, but used as E during runtime patching.
+            return LARG_E;
         default:
             return LARG_ABC;
     }
