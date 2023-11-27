@@ -511,9 +511,66 @@ uint64 GetOpCodeLen(LuauOpCode opcode) {
     }
 }
 
+typedef enum {
+    LARG_ABC,
+    LARG_AD,
+    LARG_E,
+} OpArgSemantics;
+
+OpArgSemantics GetOpCodeArgSemantics(LuauOpCode opcode) {
+    switch(opcode) {
+        // TODO: double-check these
+        case LOP_JUMP:
+        case LOP_JUMPIF:
+        case LOP_JUMPIFNOT:
+        case LOP_JUMPXEQKS:
+        case LOP_JUMPXEQKN:
+        case LOP_JUMPXEQKB:
+        case LOP_JUMPXEQKNIL:
+        case LOP_JUMPIFEQ:
+        case LOP_JUMPIFNOTEQ:
+        case LOP_JUMPIFLT:
+        case LOP_JUMPIFNOTLT:
+        case LOP_JUMPIFLE:
+        case LOP_JUMPIFNOTLE:
+        case LOP_LOADN:
+        case LOP_DUPCLOSURE:
+        case LOP_NEWCLOSURE:
+        case LOP_GETIMPORT:
+        case LOP_DUPCLOSURE:
+        case LOP_FORNPREP:
+        case LOP_FORNLOOP:
+        case LOP_FORGPREP_NEXT:
+        case LOP_FORGPREP_INEXT:
+        case LOP_FORGPREP:
+        case LOP_FORGLOOP:
+        case LOP_JUMPBACK:
+        case LOP_LOADK:
+        case LOP_LOADKX:
+            return LARG_AD;
+        default:
+            return LARG_ABC;
+    }
+}
+
 typedef struct {
     LuauOpCode opcode: 8;
-    uint32 rest: 24;
+    switch(GetOpCodeArgSemantics(opcode)) {
+        case LARG_ABC:
+            uint32 arga: 8;
+            uint32 argb: 8;
+            uint32 argc: 8;
+            break;
+        case LARG_AD:
+            uint32 arga: 8;
+            uint32 argd: 16;
+            break;
+        case LARG_E:
+            uint32 arge: 24;
+            break;
+        default:
+            Assert(0);
+    }
     if (GetOpCodeLen(opcode) == 2) {
         uint32 aux;
     }
