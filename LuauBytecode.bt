@@ -55,6 +55,13 @@ typedef enum <uchar> {
 } ConstantType;
 
 typedef struct {
+    uint32 id2: 10;
+    uint32 id1: 10;
+    uint32 id0: 10;
+    uint32 count: 2;
+} ImportID;
+
+typedef struct {
     ConstantType type;
     switch (type) {
         case LBC_CONSTANT_NIL:
@@ -82,12 +89,7 @@ typedef struct {
         case LBC_CONSTANT_IMPORT:
             // This is a bitfield that describes the string constants
             //  needed to reference the builtin.
-            struct ImportID {
-                uint32 id2: 10;
-                uint32 id1: 10;
-                uint32 id0: 10;
-                uint32 count: 2;
-            } value;
+            ImportID value;
             break;
 
         case LBC_CONSTANT_TABLE:
@@ -572,7 +574,13 @@ typedef struct {
             Assert(0);
     }
     if (GetOpCodeLen(opcode) == 2) {
-        uint32 aux;
+        switch(opcode) {
+            case LOP_GETIMPORT:
+                ImportID aux;
+                break;
+            default:
+                uint32 aux;
+        }
     }
 } Instruction <read=EnumToString(this.opcode), optimize=false>;
 
@@ -593,13 +601,10 @@ typedef struct {
 
     // Group these so they can be collapsed.
     struct {
-        for(i=0; i<sizecode; ++i) {
+        while (i<sizecode) {
             // Use implicit array mode when parsing these.
             Instruction insns <bgcolor=cLtBlue>;
-            // There's a follow-on aux field, skip the next instruction.
-            if (exists(insns.aux)) {
-                ++i;
-            }
+            i += GetOpCodeLen(insns.opcode);
         }
     } insns <optimize=false>;
     
