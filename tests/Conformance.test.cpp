@@ -33,6 +33,7 @@ LUAU_FASTFLAG(LuauCodeGenFixByteLower);
 LUAU_FASTFLAG(LuauCompileBufferAnnotation);
 LUAU_FASTFLAG(LuauLoopInterruptFix);
 LUAU_DYNAMIC_FASTFLAG(LuauStricterUtf8);
+LUAU_FASTINT(CodegenHeuristicsInstructionLimit);
 
 static lua_CompileOptions defaultOptions()
 {
@@ -303,6 +304,259 @@ static std::vector<Luau::CodeGen::FunctionBytecodeSummary> analyzeFile(const cha
 }
 
 TEST_SUITE_BEGIN("Conformance");
+
+TEST_CASE("Ares")
+{
+    runConformance("ares.lua", [](lua_State* L) {
+            lua_pushcfunction(L, lua_vector, "vector");
+            lua_setglobal(L, "vector");
+
+#if LUA_VECTOR_SIZE == 4
+            lua_pushvector(L, 0.0f, 0.0f, 0.0f, 0.0f);
+#else
+            lua_pushvector(L, 0.0f, 0.0f, 0.0f);
+#endif
+            luaL_newmetatable(L, "vector");
+
+            lua_pushstring(L, "__index");
+            lua_pushcfunction(L, lua_vector_index, nullptr);
+            lua_settable(L, -3);
+
+            lua_pushstring(L, "__namecall");
+            lua_pushcfunction(L, lua_vector_namecall, nullptr);
+            lua_settable(L, -3);
+
+            lua_setreadonly(L, -1, true);
+            lua_setmetatable(L, -2);
+            lua_pop(L, 1);
+        });
+    runConformance("ares_closures.lua");
+    runConformance("ares_coros.lua");
+    runConformance("ares_iterators.lua");
+    runConformance("ares_errors.lua");
+}
+
+static std::string getConformanceTestSource(const std::string &name) {
+    std::string path = __FILE__;
+    path.erase(path.find_last_of("\\/"));
+    path += "/conformance/";
+    path += name;
+
+    std::fstream stream(path, std::ios::in | std::ios::binary);
+    REQUIRE(stream);
+
+    std::string source(std::istreambuf_iterator<char>(stream), {});
+
+    stream.close();
+    return source;
+}
+
+TEST_CASE("Ares forkserver")
+{
+    std::string source = getConformanceTestSource("ares_multirun.lua");
+    StateRef globalState(luaL_newstate(), lua_close);
+    lua_State* GL = globalState.get();
+
+    if (codegen && luau_codegen_supported())
+        luau_codegen_create(GL);
+
+    luaL_openlibs(GL);
+
+    // Register a few global functions for conformance tests
+    std::vector<luaL_Reg> funcs = {};
+
+    if (!verbose)
+    {
+        funcs.push_back({"print", lua_silence});
+    }
+
+    // "null" terminate the list of functions to register
+    funcs.push_back({nullptr, nullptr});
+
+    lua_pushvalue(GL, LUA_GLOBALSINDEX);
+    luaL_register(GL, nullptr, funcs.data());
+    lua_pop(GL, 1);
+
+    // Done writing to globals
+    luaL_sandbox(GL);
+
+    // Spawn a new thread to load our script into
+    lua_State* L = lua_newthread(GL);
+    luaL_sandboxthread(L);
+
+    size_t bytecodeSize = 0;
+    char* bytecode = luau_compile(source.data(), source.size(), nullptr, &bytecodeSize);
+    int result = luau_load(L, "=forkserver", bytecode, bytecodeSize, 0);
+    free(bytecode);
+
+    REQUIRE(result == 0);
+
+    if (codegen && luau_codegen_supported())
+        luau_codegen_compile(L, -1);
+
+    lua_State *Lforker = eris_make_forkserver(L);
+    // Don't need the original thread on the main stack anymore
+    lua_remove(GL, -2);
+
+    // Run the basic ares test 4 times in a row, using the forkserver
+    for (int i = 0; i < 4; ++i)
+    {
+        lua_State *Lchild = eris_fork_thread(Lforker, true);
+        int status = lua_resume(Lchild, nullptr, 0);
+        REQUIRE(status == LUA_YIELD);
+
+        // serialized string is now on the Lforker stack
+        eris_serialize_thread(Lforker, Lchild);
+
+        // Pop the original thread
+        lua_pop(GL, 1);
+
+        // spawn a new thread from the serialized version still on the stack
+        Lchild = eris_fork_thread(Lforker, false);
+        status = lua_resume(Lchild, nullptr, 0);
+        REQUIRE(status == 0);
+
+        REQUIRE(lua_isstring(Lchild, -1));
+        CHECK(std::string(lua_tostring(Lchild, -1)) == "OK");
+        lua_pop(GL, 1);
+    }
+
+    extern void luaC_validate(lua_State * L); // internal function, declared in lgc.h - not exposed via lua.h
+    luaC_validate(GL);
+}
+
+TEST_CASE("TeleLuau memory limits")
+{
+    std::string source = getConformanceTestSource("teleluau_memory.lua");
+    StateRef globalState(luaL_newstate(), lua_close);
+    lua_State* GL = globalState.get();
+
+    if (codegen && luau_codegen_supported())
+        luau_codegen_create(GL);
+
+    luaL_openlibs(GL);
+
+    // Register a few global functions for conformance tests
+    std::vector<luaL_Reg> funcs = {};
+
+    if (!verbose)
+    {
+        funcs.push_back({"print", lua_silence});
+    }
+
+    // "null" terminate the list of functions to register
+    funcs.push_back({nullptr, nullptr});
+
+    lua_pushvalue(GL, LUA_GLOBALSINDEX);
+    luaL_register(GL, nullptr, funcs.data());
+    lua_pop(GL, 1);
+
+    // Done writing to globals
+    luaL_sandbox(GL);
+
+    // Spawn a new thread to load our script into
+    lua_State* L = lua_newthread(GL);
+    luaL_sandboxthread(L);
+
+    size_t bytecodeSize = 0;
+    char* bytecode = luau_compile(source.data(), source.size(), nullptr, &bytecodeSize);
+    int result = luau_load(L, "=forkserver", bytecode, bytecodeSize, 0);
+    free(bytecode);
+
+    REQUIRE(result == 0);
+
+    if (codegen && luau_codegen_supported())
+        luau_codegen_compile(L, -1);
+
+    lua_State* Lforker = eris_make_forkserver(L);
+    // Don't need the original thread on the main stack anymore
+    lua_remove(GL, -2);
+
+    for (int i = 0; i < 4; ++i)
+    {
+        // because we clean up the state at the end of each loop it's ok
+        // for us to reuse memcats.
+        const uint8_t memcat = 2;
+        lua_State* Lchild = eris_fork_thread(Lforker, true);
+        // 10kb memory limit
+        lua_setmemcatbyteslimit(Lchild, 10000);
+        // "user" memcats start from 2.
+        lua_setmemcat(Lchild, memcat);
+        int status = lua_resume(Lchild, nullptr, 0);
+        REQUIRE(status == 0);
+
+        REQUIRE(lua_isstring(Lchild, -1));
+        CHECK(std::string(lua_tostring(Lchild, -1)) == "OK");
+
+        // should still be something in the current memcat
+        size_t memcat_size = lua_totalbytes(GL, memcat);
+        CHECK((memcat_size != 0));
+        // should be nothing in the "junk" memcat
+        CHECK((lua_totalbytes(GL, 1) == 0));
+        eris_release_fork(Lchild);
+
+        // Everything should be in the "junk" memcat now
+        CHECK((lua_totalbytes(GL, 1) == memcat_size));
+
+        lua_pop(GL, 1);
+
+        lua_gc(L, LUA_GCCOLLECT, 0);
+        // all of the garbage should have been collected
+        CHECK((lua_totalbytes(GL, 1) == 0));
+        // Nothing crazy should have happened with the previous memcat
+        CHECK((lua_totalbytes(GL, memcat) == 0));
+    }
+
+    extern void luaC_validate(lua_State * L); // internal function, declared in lgc.h - not exposed via lua.h
+    luaC_validate(GL);
+}
+
+// janky hack to get data out of the persist test and into the unpersist test
+static thread_local std::string _serializedEris = "";
+
+TEST_CASE("Eris Conformance Tests")
+{
+    std::string serializedOutput;
+    runConformance(
+        "eris_persist.lua",
+        // setup
+        [](lua_State *L) {
+            lua_pushcfunction(
+                L,
+                [](lua_State* L) {
+                    lua_pushlightuserdata(L, (void *)(321));
+                    return 1;
+                },
+                "createludata");
+            lua_setglobal(L, "createludata");
+        },
+        // yield handler
+        [](lua_State *L) {
+            CHECK((lua_gettop(L) == 1));
+            _serializedEris = std::string(lua_tostring(L, -1), lua_strlen(L, -1));
+        }
+    );
+
+    runConformance(
+        "eris_unpersist.lua",
+        // setup
+        [](lua_State *L) {
+            lua_pushlstring(L, _serializedEris.c_str(), _serializedEris.length());
+            lua_setglobal(L, "buf");
+
+            lua_pushcfunction(
+                L,
+                [](lua_State *L)
+                {
+                    lua_pushboolean(L, lua_touserdata(L, -1) == (void*)321);
+                    return 1;
+                },
+                "checkludata"
+            );
+            lua_setglobal(L, "checkludata");
+        }
+    );
+}
 
 TEST_CASE("CodegenSupported")
 {
@@ -2044,257 +2298,62 @@ TEST_CASE("HugeFunction")
     CHECK(lua_tonumber(L, -1) == 42);
 }
 
-TEST_CASE("Ares")
+TEST_CASE("IrInstructionLimit")
 {
-    runConformance("ares.lua", [](lua_State* L) {
-            lua_pushcfunction(L, lua_vector, "vector");
-            lua_setglobal(L, "vector");
+    if (!codegen || !luau_codegen_supported())
+        return;
 
-#if LUA_VECTOR_SIZE == 4
-            lua_pushvector(L, 0.0f, 0.0f, 0.0f, 0.0f);
-#else
-            lua_pushvector(L, 0.0f, 0.0f, 0.0f);
-#endif
-            luaL_newmetatable(L, "vector");
+    ScopedFastInt codegenHeuristicsInstructionLimit{FInt::CodegenHeuristicsInstructionLimit, 50'000};
 
-            lua_pushstring(L, "__index");
-            lua_pushcfunction(L, lua_vector_index, nullptr);
-            lua_settable(L, -3);
+    std::string source;
 
-            lua_pushstring(L, "__namecall");
-            lua_pushcfunction(L, lua_vector_namecall, nullptr);
-            lua_settable(L, -3);
-
-            lua_setreadonly(L, -1, true);
-            lua_setmetatable(L, -2);
-            lua_pop(L, 1);
-        });
-    runConformance("ares_closures.lua");
-    runConformance("ares_coros.lua");
-    runConformance("ares_iterators.lua");
-    runConformance("ares_errors.lua");
-}
-
-static std::string getConformanceTestSource(const std::string &name) {
-    std::string path = __FILE__;
-    path.erase(path.find_last_of("\\/"));
-    path += "/conformance/";
-    path += name;
-
-    std::fstream stream(path, std::ios::in | std::ios::binary);
-    REQUIRE(stream);
-
-    std::string source(std::istreambuf_iterator<char>(stream), {});
-
-    stream.close();
-    return source;
-}
-
-TEST_CASE("Ares forkserver")
-{
-    std::string source = getConformanceTestSource("ares_multirun.lua");
-    StateRef globalState(luaL_newstate(), lua_close);
-    lua_State* GL = globalState.get();
-
-    if (codegen && luau_codegen_supported())
-        luau_codegen_create(GL);
-
-    luaL_openlibs(GL);
-
-    // Register a few global functions for conformance tests
-    std::vector<luaL_Reg> funcs = {};
-
-    if (!verbose)
+    // Generate a hundred fat functions
+    for (int fn = 0; fn < 100; fn++)
     {
-        funcs.push_back({"print", lua_silence});
+        source += "local function fn" + std::to_string(fn) + "(...)\n";
+        source += "if ... then\n";
+        source += "local p1, p2 = ...\n";
+        source += "local _ = {\n";
+
+        for (int i = 0; i < 100; ++i)
+        {
+            source += "p1*0." + std::to_string(i) + ",";
+            source += "p2+0." + std::to_string(i) + ",";
+        }
+
+        source += "}\n";
+        source += "return _\n";
+        source += "end\n";
+        source += "end\n";
     }
 
-    // "null" terminate the list of functions to register
-    funcs.push_back({nullptr, nullptr});
+    StateRef globalState(luaL_newstate(), lua_close);
+    lua_State* L = globalState.get();
 
-    lua_pushvalue(GL, LUA_GLOBALSINDEX);
-    luaL_register(GL, nullptr, funcs.data());
-    lua_pop(GL, 1);
+    luau_codegen_create(L);
 
-    // Done writing to globals
-    luaL_sandbox(GL);
-
-    // Spawn a new thread to load our script into
-    lua_State* L = lua_newthread(GL);
+    luaL_openlibs(L);
+    luaL_sandbox(L);
     luaL_sandboxthread(L);
 
     size_t bytecodeSize = 0;
     char* bytecode = luau_compile(source.data(), source.size(), nullptr, &bytecodeSize);
-    int result = luau_load(L, "=forkserver", bytecode, bytecodeSize, 0);
+    int result = luau_load(L, "=HugeFunction", bytecode, bytecodeSize, 0);
     free(bytecode);
 
     REQUIRE(result == 0);
 
-    if (codegen && luau_codegen_supported())
-        luau_codegen_compile(L, -1);
+    Luau::CodeGen::CompilationStats nativeStats = {};
+    Luau::CodeGen::CodeGenCompilationResult nativeResult = Luau::CodeGen::compile(L, -1, Luau::CodeGen::CodeGen_ColdFunctions, &nativeStats);
 
-    lua_State *Lforker = eris_make_forkserver(L);
-    // Don't need the original thread on the main stack anymore
-    lua_remove(GL, -2);
+    // Limit is not hit immediately, so with some functions compiled it should be a success
+    CHECK(nativeResult != Luau::CodeGen::CodeGenCompilationResult::CodeGenFailed);
 
-    // Run the basic ares test 4 times in a row, using the forkserver
-    for (int i = 0; i < 4; ++i)
-    {
-        lua_State *Lchild = eris_fork_thread(Lforker, true);
-        int status = lua_resume(Lchild, nullptr, 0);
-        REQUIRE(status == LUA_YIELD);
+    // We should be able to compile at least one of our functions
+    CHECK(nativeStats.functionsCompiled > 0);
 
-        // serialized string is now on the Lforker stack
-        eris_serialize_thread(Lforker, Lchild);
-
-        // Pop the original thread
-        lua_pop(GL, 1);
-
-        // spawn a new thread from the serialized version still on the stack
-        Lchild = eris_fork_thread(Lforker, false);
-        status = lua_resume(Lchild, nullptr, 0);
-        REQUIRE(status == 0);
-
-        REQUIRE(lua_isstring(Lchild, -1));
-        CHECK(std::string(lua_tostring(Lchild, -1)) == "OK");
-        lua_pop(GL, 1);
-    }
-
-    extern void luaC_validate(lua_State * L); // internal function, declared in lgc.h - not exposed via lua.h
-    luaC_validate(GL);
-}
-
-TEST_CASE("TeleLuau memory limits")
-{
-    std::string source = getConformanceTestSource("teleluau_memory.lua");
-    StateRef globalState(luaL_newstate(), lua_close);
-    lua_State* GL = globalState.get();
-
-    if (codegen && luau_codegen_supported())
-        luau_codegen_create(GL);
-
-    luaL_openlibs(GL);
-
-    // Register a few global functions for conformance tests
-    std::vector<luaL_Reg> funcs = {};
-
-    if (!verbose)
-    {
-        funcs.push_back({"print", lua_silence});
-    }
-
-    // "null" terminate the list of functions to register
-    funcs.push_back({nullptr, nullptr});
-
-    lua_pushvalue(GL, LUA_GLOBALSINDEX);
-    luaL_register(GL, nullptr, funcs.data());
-    lua_pop(GL, 1);
-
-    // Done writing to globals
-    luaL_sandbox(GL);
-
-    // Spawn a new thread to load our script into
-    lua_State* L = lua_newthread(GL);
-    luaL_sandboxthread(L);
-
-    size_t bytecodeSize = 0;
-    char* bytecode = luau_compile(source.data(), source.size(), nullptr, &bytecodeSize);
-    int result = luau_load(L, "=forkserver", bytecode, bytecodeSize, 0);
-    free(bytecode);
-
-    REQUIRE(result == 0);
-
-    if (codegen && luau_codegen_supported())
-        luau_codegen_compile(L, -1);
-
-    lua_State* Lforker = eris_make_forkserver(L);
-    // Don't need the original thread on the main stack anymore
-    lua_remove(GL, -2);
-
-    for (int i = 0; i < 4; ++i)
-    {
-        // because we clean up the state at the end of each loop it's ok
-        // for us to reuse memcats.
-        const uint8_t memcat = 2;
-        lua_State* Lchild = eris_fork_thread(Lforker, true);
-        // 10kb memory limit
-        lua_setmemcatbyteslimit(Lchild, 10000);
-        // "user" memcats start from 2.
-        lua_setmemcat(Lchild, memcat);
-        int status = lua_resume(Lchild, nullptr, 0);
-        REQUIRE(status == 0);
-
-        REQUIRE(lua_isstring(Lchild, -1));
-        CHECK(std::string(lua_tostring(Lchild, -1)) == "OK");
-
-        // should still be something in the current memcat
-        size_t memcat_size = lua_totalbytes(GL, memcat);
-        CHECK((memcat_size != 0));
-        // should be nothing in the "junk" memcat
-        CHECK((lua_totalbytes(GL, 1) == 0));
-        eris_release_fork(Lchild);
-
-        // Everything should be in the "junk" memcat now
-        CHECK((lua_totalbytes(GL, 1) == memcat_size));
-
-        lua_pop(GL, 1);
-
-        lua_gc(L, LUA_GCCOLLECT, 0);
-        // all of the garbage should have been collected
-        CHECK((lua_totalbytes(GL, 1) == 0));
-        // Nothing crazy should have happened with the previous memcat
-        CHECK((lua_totalbytes(GL, memcat) == 0));
-    }
-
-    extern void luaC_validate(lua_State * L); // internal function, declared in lgc.h - not exposed via lua.h
-    luaC_validate(GL);
-}
-
-// janky hack to get data out of the persist test and into the unpersist test
-static thread_local std::string _serializedEris = "";
-
-TEST_CASE("Eris Conformance Tests")
-{
-    std::string serializedOutput;
-    runConformance(
-        "eris_persist.lua",
-        // setup
-        [](lua_State *L) {
-            lua_pushcfunction(
-                L,
-                [](lua_State* L) {
-                    lua_pushlightuserdata(L, (void *)(321));
-                    return 1;
-                },
-                "createludata");
-            lua_setglobal(L, "createludata");
-        },
-        // yield handler
-        [](lua_State *L) {
-            CHECK((lua_gettop(L) == 1));
-            _serializedEris = std::string(lua_tostring(L, -1), lua_strlen(L, -1));
-        }
-    );
-
-    runConformance(
-        "eris_unpersist.lua",
-        // setup
-        [](lua_State *L) {
-            lua_pushlstring(L, _serializedEris.c_str(), _serializedEris.length());
-            lua_setglobal(L, "buf");
-
-            lua_pushcfunction(
-                L,
-                [](lua_State *L)
-                {
-                    lua_pushboolean(L, lua_touserdata(L, -1) == (void*)321);
-                    return 1;
-                },
-                "checkludata"
-            );
-            lua_setglobal(L, "checkludata");
-        }
-    );
+    // But because of the limit, not all of them (101 because there's an extra global function)
+    CHECK(nativeStats.functionsCompiled < 101);
 }
 
 TEST_CASE("BytecodeDistributionPerFunctionTest")
