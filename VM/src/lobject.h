@@ -5,6 +5,8 @@
 #include "lua.h"
 #include "lcommon.h"
 
+LUAU_FASTFLAG(LuauTaggedLuData)
+
 /*
 ** Union of all collectible objects
 */
